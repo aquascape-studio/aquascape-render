@@ -18,3 +18,4 @@ export type { PlantSimpleProps } from "./scene/PlantSimple.js";
 export { PlantedTank } from "./scene/PlantedTank.js";
 export type { PlantedTankProps, PlantEntry } from "./scene/PlantedTank.js";
 export { Aquarium } from "./Aquarium.js";
+export * from "./contract.js";
