@@ -49,6 +49,8 @@ describe("speciesLook", () => {
   it("adds a coral tip when colorRange mentions red", () => {
     expect(speciesLook({ id: "r", growthForm: "stem", colorRange: ["green", "red-high-light"] }).tipColorHex).toMatch(/^#e8735a$/i);
     expect(speciesLook({ id: "g", growthForm: "stem", colorRange: ["green"] }).tipColorHex).toBeUndefined();
+    // with a botany visual block, no tipColorHex means no tip (e.g. red-veined Bucephalandra)
+    expect(speciesLook({ id: "b", growthForm: "epiphyte", colorRange: ["red-veined"], visual: { leafShape: "ovate" } }).tipColorHex).toBeUndefined();
   });
 
   it("falls back on invalid colour / unknown form", () => {
