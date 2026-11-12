@@ -87,7 +87,8 @@ export function speciesLook(record: BotanyRecordLike): SpeciesLook {
 
   let tipColorHex: string | undefined;
   if (v.tipColorHex && HEX_RE.test(v.tipColorHex)) tipColorHex = v.tipColorHex;
-  else if (mentionsRed(record.colorRange)) tipColorHex = DEFAULT_CORAL_HEX;
+  // contract 1.0.1: when botany supplies `visual`, its tipColorHex is authoritative
+  else if (!record.visual && mentionsRed(record.colorRange)) tipColorHex = DEFAULT_CORAL_HEX;
 
   const look: SpeciesLook = {
     speciesId: record.id,

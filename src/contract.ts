@@ -16,7 +16,18 @@
  * smooth sculptural stones.
  */
 
-export const RENDER_CONTRACT_VERSION = "1.0.0" as const;
+export const RENDER_CONTRACT_VERSION = "1.0.1" as const;
+
+/*
+ * 1.0.1 (2026-11-12, doc-only, from render-agent objections):
+ *  - Visual substrate: the rendered bed slopes up towards the back. PlantVisual.y
+ *    and hardscape are relative to the LOCAL bed surface; the renderer adds
+ *    substrateHeight(x, z) itself. Callers keep passing sim coordinates as-is.
+ *  - growthForm "floating" plants sit at the water surface; their y is ignored.
+ *  - Red tips come from botany visual.tipColorHex only when `visual` is present;
+ *    the colorRange heuristic is a fallback for records without `visual`.
+ *  - FrontalTank's return type is React's JSX.Element (import type { JSX } from "react").
+ */
 
 /** Botany growthForm values (aquascape-botany plants.json). */
 export type GrowthForm =
