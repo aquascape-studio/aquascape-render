@@ -16,7 +16,29 @@
  * smooth sculptural stones.
  */
 
-export const RENDER_CONTRACT_VERSION = "1.0.1" as const;
+export const RENDER_CONTRACT_VERSION = "1.1.0" as const;
+
+/*
+ * 1.1.0 (2026-11-13, additive — style templates + composition guides):
+ *  - HardscapeVisual.role (optional): Iwagumi stone role. Shapes by role:
+ *    oyaishi = tallest, upright, slight forward lean, strong sculptural facets
+ *    softened; fukuishi / soeishi = progressively lower and wider; suteishi =
+ *    small, low, mostly buried. kind "wood" ignores role.
+ *  - HardscapeVisual.buriedFrac (optional, 0..0.6, default 0.15): fraction of
+ *    the stone's height sunk below the local bed surface (stones must look
+ *    planted in the substrate, never floating or perched).
+ *  - FrontalTankProps.guides: composition guide overlay drawn over the front
+ *    glass in screen space — "thirds" (rule-of-thirds 2+2 lines), "golden"
+ *    (phi lines at 0.382 / 0.618 of width and height), default "none".
+ *    Thin (1 css px), #1D1D1F at 35% opacity, plus a small focal ring at
+ *    `focalPoint` when given. Must not affect the 3D scene or lighting.
+ *  - FrontalTankProps.focalPoint (optional): {x, y} in tank cm (front view).
+ *  - FrontalTankProps.bed (optional): visual substrate slope; frontCm/backCm
+ *    are bed heights at the front and back glass. Default stays as 1.0.1.
+ *    Iwagumi templates use a steep slope (e.g. 2 → 9 cm).
+ *  - exactOptionalPropertyTypes: every optional prop also accepts `undefined`.
+ *  - Package dist must be valid Node ESM (relative imports end in ".js").
+ */
 
 /*
  * 1.0.1 (2026-11-12, doc-only, from render-agent objections):
@@ -54,7 +76,7 @@ export interface SpeciesLook {
   /** base leaf colour under good conditions, "#rrggbb" */
   colorHex: string;
   /** optional tip / young-leaf colour, e.g. coral for red stems */
-  tipColorHex?: string;
+  tipColorHex?: string | undefined;
 }
 
 /**
@@ -86,25 +108,41 @@ export interface HardscapeVisual {
   sizeCm: [number, number, number];
   /** deterministic shape seed */
   seed: number;
+  /** Iwagumi role; shapes the stone (see 1.1.0 notes). Ignored for wood. */
+  role?: StoneRole | undefined;
+  /** 0..0.6, default 0.15 — fraction of height buried in the bed */
+  buriedFrac?: number | undefined;
 }
+
+/** Iwagumi stone roles: main, secondary, tertiary/support, scattered fill. */
+export type StoneRole = "oyaishi" | "fukuishi" | "soeishi" | "suteishi";
+
+/** Composition guide overlay. */
+export type CompositionGuide = "none" | "thirds" | "golden";
 
 export interface FrontalTankProps {
   tank: { widthCm: number; depthCm: number; heightCm: number };
   /** keyed by speciesId; every plants[i].speciesId must be present */
   species: Record<string, SpeciesLook>;
   plants: PlantVisual[];
-  hardscape?: HardscapeVisual[];
+  hardscape?: HardscapeVisual[] | undefined;
+  /** composition guide overlay, default "none" (1.1.0) */
+  guides?: CompositionGuide | undefined;
+  /** focal point marker for the guide overlay, tank cm, front view (1.1.0) */
+  focalPoint?: { x: number; y: number } | undefined;
+  /** visual bed slope (1.1.0); heights in cm at the front / back glass */
+  bed?: { frontCm: number; backCm: number } | undefined;
   /**
    * "high": desktop (shadows, AO/soft contact shadow, more leaves).
    * "low": phones / low-end GPUs. "auto" (default) picks by device.
    */
-  quality?: "auto" | "high" | "low";
+  quality?: "auto" | "high" | "low" | undefined;
   /** when true, no idle sway / camera easing (prefers-reduced-motion) */
-  reducedMotion?: boolean;
-  className?: string;
-  "data-testid"?: string;
+  reducedMotion?: boolean | undefined;
+  className?: string | undefined;
+  "data-testid"?: string | undefined;
   /** fired once after the first frame is rendered */
-  onReady?: () => void;
+  onReady?: (() => void) | undefined;
 }
 
 /**
