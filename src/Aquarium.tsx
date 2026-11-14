@@ -2,13 +2,13 @@ import { useMemo } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import * as THREE from "three";
-import { SCENE_BACKGROUND } from "./palette";
-import type { AquariumProps, CameraPreset, TankSizeCm } from "./types";
-import { Tank } from "./scene/Tank";
-import { Lighting } from "./scene/Lighting";
-import { WaterVolume } from "./scene/WaterVolume";
-import { Rock } from "./scene/Rock";
-import { Plant } from "./scene/Plant";
+import { SCENE_BACKGROUND } from "./palette.js";
+import type { AquariumProps, CameraPreset, TankSizeCm } from "./types.js";
+import { Tank } from "./scene/Tank.js";
+import { Lighting } from "./scene/Lighting.js";
+import { WaterVolume } from "./scene/WaterVolume.js";
+import { Rock } from "./scene/Rock.js";
+import { Plant } from "./scene/Plant.js";
 
 type CameraRig = {
   position: [number, number, number];

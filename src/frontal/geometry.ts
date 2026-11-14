@@ -5,9 +5,10 @@
  */
 import * as THREE from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import type { LeafShape } from "../contract.js";
+import type { LeafShape, StoneRole } from "../contract.js";
 import { rand, srand } from "./rng.js";
 import { substrateHeight, type SubstrateProfile } from "./layout.js";
+import { roleShape } from "./stones.js";
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
@@ -16,7 +17,7 @@ function widthProfile(shape: LeafShape, t: number): number {
   const base = clamp(t * 14, 0, 1); // tiny petiole pinch
   switch (shape) {
     case "lanceolate":
-      return 0.5 * Math.pow(Math.sin(Math.PI * Math.pow(t, 0.72)), 0.9) * base;
+      return 0.5 * Math.pow(Math.sin(Math.PI * Math.pow(t, 0.7)), 0.72) * base;
     case "ovate":
       return 0.5 * Math.pow(Math.sin(Math.PI * Math.pow(t, 0.62)), 0.75) * base;
     case "cordate": {
@@ -56,7 +57,8 @@ const BEND: Record<LeafShape, number> = {
  */
 export function makeLeafGeometry(shape: LeafShape, segL = 12, segW = 5): THREE.BufferGeometry {
   const bend = BEND[shape];
-  const thick = shape === "round" ? 0.16 : 0.12;
+  // thick, soft, "inflated" leaves — never paper-thin slivers
+  const thick = shape === "round" ? 0.24 : shape === "strap" || shape === "linear" || shape === "needle" ? 0.16 : 0.22;
   const cup = 0.22;
   const positions: number[] = [];
   const indices: number[] = [];
@@ -161,35 +163,96 @@ export function makeLayerGeometry(key: LeafShape | "stem"): THREE.BufferGeometry
   return makeLeafGeometry(key);
 }
 
-/** Smooth sculptural pebble, base sunk slightly below y = 0. */
-export function makePebbleGeometry(size: [number, number, number], seed: number): THREE.BufferGeometry {
-  const g = new THREE.SphereGeometry(1, 56, 36);
+/**
+ * Smooth sculptural stone (contract 1.1.0 roles). A convex "softened
+ * polytope": the radius along each direction is a soft-min over a few random
+ * facet planes and a sphere, so the stone has clear sculptural planes with
+ * rounded edges (no rough photoreal texture). Role controls taper, peak and
+ * squash. Output spans y ∈ [0, size.y · heightFrac], centred in x/z, filling
+ * the bounding box width/depth. Deterministic in (size, seed, role).
+ */
+export function makeStoneGeometry(
+  size: [number, number, number],
+  seed: number,
+  role: StoneRole | undefined,
+  segW = 72,
+  segH = 48,
+): THREE.BufferGeometry {
+  const shape = roleShape(role);
+  const s = seed >>> 0;
+  const sphere = new THREE.SphereGeometry(1, segW, segH);
+  sphere.deleteAttribute("uv");
+  sphere.deleteAttribute("normal");
+  const g = mergeVertices(sphere, 1e-6);
+  sphere.dispose();
   const pos = g.getAttribute("position") as THREE.BufferAttribute;
-  const f: number[] = [];
-  for (let k = 0; k < 4; k++) {
-    f.push(
-      srand(seed, k, 1) * 1.6, srand(seed, k, 2) * 1.6, srand(seed, k, 3) * 1.6,
-      rand(seed, k, 4) * 6.28, 0.06 + 0.07 * rand(seed, k, 5),
-    );
+
+  // facet planes: normals spread around the upper body, a few on the shoulders
+  const planes: number[] = [];
+  const nF = shape.facets;
+  for (let k = 0; k < nF; k++) {
+    // one crown plane, the rest mostly steep side planes (split-face look)
+    const az = (k / nF) * Math.PI * 2 + srand(s, k, 11) * 0.45;
+    const el = (k === 0 ? 62 + 20 * rand(s, k, 12) : k % 3 === 0 ? 30 + 25 * rand(s, k, 12) : 2 + 22 * rand(s, k, 12)) * (Math.PI / 180);
+    const nx = Math.cos(el) * Math.cos(az);
+    const ny = Math.sin(el);
+    const nz = Math.cos(el) * Math.sin(az);
+    planes.push(nx, ny, nz, 0.7 + 0.2 * rand(s, k, 13));
   }
-  const lean = srand(seed, 9, 6) * 0.35;
-  const leanZ = srand(seed, 9, 7) * 0.2;
+  const crisp = shape.crisp;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  const v = new THREE.Vector3();
   for (let i = 0; i < pos.count; i++) {
-    let x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-    let r = 1;
-    for (let k = 0; k < 4; k++) {
-      const o = k * 5;
-      r += f[o + 4]! * Math.sin(x * f[o]! + y * f[o + 1]! + z * f[o + 2]! + f[o + 3]!);
+    v.fromBufferAttribute(pos, i).normalize();
+    // soft-min of distances to the sphere (r = 1) and each facet plane
+    let acc = Math.exp(-crisp * 1.0);
+    for (let k = 0; k < nF; k++) {
+      const o = k * 4;
+      const dt = v.x * planes[o]! + v.y * planes[o + 1]! + v.z * planes[o + 2]!;
+      if (dt > 0.04) acc += Math.exp((-crisp * planes[o + 3]!) / dt);
     }
-    x *= r; y *= r; z *= r;
-    // flatter underside, softly domed top, slight asymmetric lean
-    if (y < 0) y *= 0.45;
-    else y *= 1 - 0.18 * Math.max(0, x * Math.sign(lean || 1)); // asymmetric shoulder
-    x += lean * Math.max(0, y);
-    z += leanZ * Math.max(0, y);
-    pos.setXYZ(i, (x * size[0]) / 2, ((y + 0.32) * size[1]) / 1.32, (z * size[2]) / 2);
+    let r = -Math.log(acc) / crisp;
+    // very gentle large-scale undulation so planes are not dead flat
+    r *= 1 + 0.025 * Math.sin(v.x * 3.1 + v.y * 2.3 + rand(s, 0, 14) * 6.28) * Math.cos(v.z * 2.7 + rand(s, 0, 15) * 6.28);
+    let x = v.x * r;
+    let y = v.y * r;
+    let z = v.z * r;
+    // flatter buried base, domed / squashed crown
+    if (y < 0) y *= 0.55;
+    else y *= shape.dome;
+    const yn = Math.min(1, Math.max(0, (y + 0.55) / (0.55 + shape.dome))); // 0 base … 1 top
+    const tp = 1 - shape.taper * Math.pow(yn, 1.4);
+    x *= tp;
+    z *= tp;
+    // asymmetric peak: shift the crown sideways a little
+    x += shape.peak * yn * yn * (srand(s, 1, 16) >= 0 ? 1 : -1);
+    pos.setXYZ(i, x, y, z);
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
+  const H = size[1] * shape.heightFrac;
+  const sx = size[0] / (maxX - minX);
+  const sy = H / (maxY - minY);
+  const sz = size[2] / (maxZ - minZ);
+  const cx = (minX + maxX) / 2;
+  const cz = (minZ + maxZ) / 2;
+  const col = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    const y = (pos.getY(i) - minY) * sy;
+    pos.setXYZ(i, (pos.getX(i) - cx) * sx, y, (pos.getZ(i) - cz) * sz);
+    // soft vertical gradient: slightly darker near the bed, lighter crown,
+    // plus faint horizontal strata for a sculpted read
+    const t = y / H;
+    const strata = 0.025 * Math.sin(t * 19 + rand(s, 2, 17) * 6.28);
+    const c = 0.8 + 0.24 * Math.pow(t, 0.7) + strata;
+    col[i * 3] = c;
+    col[i * 3 + 1] = c;
+    col[i * 3 + 2] = c * 1.01;
+  }
+  g.setAttribute("color", new THREE.BufferAttribute(col, 3));
   g.computeVertexNormals();
+  g.computeBoundingBox();
   return g;
 }
 
@@ -229,32 +292,52 @@ export function makeBranchGeometry(size: [number, number, number], seed: number)
  * over a rounded fillet down to the glass floor at y = −floorDepth.
  */
 export function makeSubstrateGeometry(p: SubstrateProfile, floorDepth: number, inset = 0.4): THREE.BufferGeometry {
-  const nx = 64;
-  const nzTop = 28;
-  const filletSteps = 8;
-  const fr = Math.min(1.6, floorDepth * 0.6); // fillet radius
+  const nx = 96;
+  const nzTop = 36;
+  const filletSteps = 10;
+  const frontSteps = 6;
+  // small, crisp rounded lip — a fine front sand edge rather than a fat roll
+  const fr = Math.min(0.55, floorDepth * 0.3);
   const w = p.widthCm - inset * 2;
   const zFront = p.depthCm / 2 - inset;
   const zBack = -p.depthCm / 2 + inset;
-  // profile: list of (z, yBase, topWeight)
-  const prof: { z: number; y: number | null; drop: number }[] = [];
-  prof.push({ z: zFront, y: -floorDepth, drop: 0 });
+  // profile rows: z, fixed y (front face) or drop below the bed surface, and a shade
+  const prof: { z: number; u: number | null; drop: number; face: number }[] = [];
+  for (let s = 0; s < frontSteps; s++) {
+    // vertical front face from the glass floor up to the start of the lip
+    prof.push({ z: zFront, u: s / frontSteps, drop: 0, face: 1 });
+  }
   for (let s = 0; s <= filletSteps; s++) {
     const a = (s / filletSteps) * (Math.PI / 2);
-    // from vertical (front face) to horizontal (top)
-    prof.push({ z: zFront - fr + Math.cos(a) * fr, y: null, drop: fr - Math.sin(a) * fr });
+    prof.push({ z: zFront - fr + Math.cos(a) * fr, u: null, drop: fr - Math.sin(a) * fr, face: 1 - s / filletSteps });
   }
   for (let s = 1; s <= nzTop; s++) {
-    const z = zFront - fr + ((zBack - (zFront - fr)) * s) / nzTop;
-    prof.push({ z, y: null, drop: 0 });
+    const t = s / nzTop;
+    const z = zFront - fr + (zBack - (zFront - fr)) * t;
+    prof.push({ z, u: null, drop: 0, face: 0 });
   }
   const cols = nx + 1;
   const positions: number[] = [];
+  const colors: number[] = [];
   for (const pr of prof) {
     for (let i = 0; i <= nx; i++) {
       const x = -w / 2 + (w * i) / nx;
-      const y = pr.y ?? substrateHeight(p, x, pr.z) - pr.drop;
+      const top = substrateHeight(p, x, zFront - fr);
+      const y = pr.u !== null
+        ? -floorDepth + (top - fr + floorDepth) * pr.u
+        : substrateHeight(p, x, pr.z) - pr.drop;
       positions.push(x, y, pr.z);
+      // front face: fine soil strata, darker towards the glass floor;
+      // top: soft lighter sand with a slight tonal drift
+      let c: number;
+      if (pr.face > 0) {
+        const depth = Math.max(0, top - y);
+        const band = 0.035 * Math.sin(depth * 5.3 + x * 0.05) + 0.02 * Math.sin(depth * 13.1);
+        c = 0.9 - 0.16 * Math.min(1, depth / Math.max(1, floorDepth)) + band;
+      } else {
+        c = 1.0 + 0.04 * Math.sin(x * 0.21 + pr.z * 0.33) * Math.cos(x * 0.07 - pr.z * 0.19);
+      }
+      colors.push(c, c * 0.995, c * 0.985);
     }
   }
   const idx: number[] = [];
@@ -269,6 +352,7 @@ export function makeSubstrateGeometry(p: SubstrateProfile, floorDepth: number, i
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
   g.setIndex(idx);
   g.computeVertexNormals();
   return g;

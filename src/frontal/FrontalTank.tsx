@@ -7,59 +7,32 @@
  * rewritten in place when props change (timeline scrubbing); geometry and
  * materials are created once.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
-import type { JSX } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { JSX, RefObject } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import type { FrontalTankProps, HardscapeVisual, PlantVisual, SpeciesLook } from "../contract.js";
+import type { CompositionGuide, FrontalTankProps, HardscapeVisual, PlantVisual, SpeciesLook } from "../contract.js";
 import {
   InstanceBuffer,
   LAYER_KEYS,
-  layoutPlant,
+  LayoutCache,
   substrateHeight,
   type LayerKey,
   type RenderQuality,
-  type SubstrateProfile,
 } from "./layout.js";
 import {
   makeBranchGeometry,
   makeLayerGeometry,
-  makePebbleGeometry,
+  makeStoneGeometry,
   makeSubstrateGeometry,
 } from "./geometry.js";
-import { makeFoliageMaterial, makeSharedUniforms, type SharedUniforms } from "./materials.js";
+import { makeFoliageMaterial, makeSharedUniforms, makeSubstrateMaterial, type SharedUniforms } from "./materials.js";
 import { resolveQuality } from "./quality.js";
+import { stonePlacement } from "./stones.js";
+import { fitCamera, focalToScreen, frontGlassRect, guideLines, tankGeom, type TankGeom } from "./tank.js";
 
 const BG = "#ffffff";
-
-interface TankGeom {
-  w: number;
-  d: number;
-  h: number;
-  /** glass floor depth below substrate surface y=0 at the front */
-  floor: number;
-  waterY: number;
-  topY: number;
-  profile: SubstrateProfile;
-}
-
-function tankGeom(t: FrontalTankProps["tank"]): TankGeom {
-  const w = Math.max(10, t.widthCm);
-  const d = Math.max(8, t.depthCm);
-  const h = Math.max(8, t.heightCm);
-  const floor = Math.min(4, Math.max(1.5, h * 0.08));
-  const topY = h - floor;
-  return {
-    w,
-    d,
-    h,
-    floor,
-    topY,
-    waterY: topY - Math.min(2, h * 0.05),
-    profile: { front: 0, back: Math.min(d * 0.2, h * 0.18), depthCm: d, widthCm: w },
-  };
-}
 
 // ---------------------------------------------------------------------------
 
@@ -88,19 +61,13 @@ function SceneSetup({ g, quality }: { g: TankGeom; quality: RenderQuality }) {
   // Front-on camera that fits the tank front face (plus margin) to the canvas.
   useLayoutEffect(() => {
     const cam = camera as THREE.PerspectiveCamera;
-    const fov = 24;
-    const aspect = size.width / Math.max(1, size.height);
-    const halfH = (g.h / 2) * 1.12;
-    const halfW = (g.w / 2) * (aspect < 1 ? 1.06 : 1.1);
-    const tanV = Math.tan((fov * Math.PI) / 360);
-    const dist = Math.max(halfH / tanV, halfW / (tanV * aspect));
-    const yc = -g.floor + g.h / 2;
-    cam.fov = fov;
-    cam.aspect = aspect;
+    const fit = fitCamera(g, size.width / Math.max(1, size.height));
+    cam.fov = fit.fov;
+    cam.aspect = fit.aspect;
     cam.near = 1;
-    cam.far = dist + g.d * 4 + 200;
-    cam.position.set(0, yc, g.d / 2 + dist);
-    cam.lookAt(0, yc, -1e4);
+    cam.far = fit.z + g.d * 4 + 200;
+    cam.position.set(fit.x, fit.y, fit.z);
+    cam.lookAt(fit.x, fit.y, -1e4);
     cam.updateProjectionMatrix();
     invalidate();
   }, [camera, size.width, size.height, g, invalidate]);
@@ -284,34 +251,32 @@ function TankShell({ g }: { g: TankGeom }) {
 
 function Substrate({ g, quality }: { g: TankGeom; quality: RenderQuality }) {
   const geo = useMemo(() => makeSubstrateGeometry(g.profile, g.floor), [g]);
-  const mat = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: "#6f5a48", roughness: 0.9, metalness: 0, envMapIntensity: 0.7 }),
-    [],
-  );
+  const mat = useMemo(() => makeSubstrateMaterial(), []);
   useEffect(() => () => geo.dispose(), [geo]);
   useEffect(() => () => mat.dispose(), [mat]);
   return <mesh geometry={geo} material={mat} receiveShadow={quality === "high"} />;
 }
 
-const STONE_TONES = ["#8f8a82", "#857f77", "#96918a", "#7f7a73"];
+const STONE_TONES = ["#a7a39c", "#9d9992", "#aeaaa3", "#99958f"];
 
 function Hardscape({ items, g, quality }: { items: HardscapeVisual[]; g: TankGeom; quality: RenderQuality }) {
   const built = useMemo(
     () =>
       items.map((h) => {
-        const baseY = substrateHeight(g.profile, h.x, h.z);
+        const place = stonePlacement(h, g.profile);
         if (h.kind === "wood") {
           const parts = makeBranchGeometry(h.sizeCm, h.seed);
-          return { h, baseY, parts, stone: null as THREE.BufferGeometry | null };
+          return { h, place, parts, stone: null as THREE.BufferGeometry | null };
         }
-        return { h, baseY, parts: [] as THREE.BufferGeometry[], stone: makePebbleGeometry(h.sizeCm, h.seed) };
+        return { h, place, parts: [] as THREE.BufferGeometry[], stone: makeStoneGeometry(h.sizeCm, h.seed, h.role) };
       }),
     [items, g],
   );
   const stoneMats = useMemo(
     () =>
       STONE_TONES.map(
-        (c) => new THREE.MeshPhysicalMaterial({ color: c, roughness: 0.55, metalness: 0, clearcoat: 0.2, clearcoatRoughness: 0.5, envMapIntensity: 0.8 }),
+        (c) =>
+          new THREE.MeshStandardMaterial({ color: c, vertexColors: true, roughness: 0.62, metalness: 0, envMapIntensity: 0.9 }),
       ),
     [],
   );
@@ -332,14 +297,22 @@ function Hardscape({ items, g, quality }: { items: HardscapeVisual[]; g: TankGeo
   const shadows = quality === "high";
   return (
     <group>
-      {built.map(({ h, baseY, parts, stone }) => (
-        <group key={h.id} position={[h.x, baseY, h.z]} rotation={[0, h.rotationY, 0]}>
-          {stone && (
-            <mesh geometry={stone} material={stoneMats[Math.abs(h.seed) % stoneMats.length]} castShadow={shadows} receiveShadow={shadows} />
-          )}
-          {parts.map((p, i) => (
-            <mesh key={i} geometry={p} material={woodMat} castShadow={shadows} receiveShadow={shadows} />
-          ))}
+      {built.map(({ h, place, parts, stone }) => (
+        // outer group: bed placement + lean (in tank space); inner: rotation about y
+        <group key={h.id} position={[h.x, place.bottomY, h.z]} rotation={[place.leanX, 0, place.leanZ]}>
+          <group rotation={[0, h.rotationY, 0]}>
+            {stone && (
+              <mesh
+                geometry={stone}
+                material={stoneMats[Math.abs(h.seed) % stoneMats.length]}
+                castShadow={shadows}
+                receiveShadow={shadows}
+              />
+            )}
+            {parts.map((p, i) => (
+              <mesh key={i} geometry={p} material={woodMat} castShadow={shadows} receiveShadow={shadows} />
+            ))}
+          </group>
         </group>
       ))}
     </group>
@@ -348,8 +321,19 @@ function Hardscape({ items, g, quality }: { items: HardscapeVisual[]; g: TankGeo
 
 // ---------------------------------------------------------------------------
 
+const LUT_N = 4096;
+const SRGB_LUT = (() => {
+  const t = new Float32Array(LUT_N + 1);
+  for (let i = 0; i <= LUT_N; i++) {
+    const c = (i / LUT_N) * 1.25; // colours may exceed 1 slightly (ao/variation)
+    t[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  }
+  return t;
+})();
+
 function srgbToLinear(c: number): number {
-  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  const i = Math.round((c < 0 ? 0 : c > 1.25 ? 1.25 : c) * (LUT_N / 1.25));
+  return SRGB_LUT[i]!;
 }
 
 function nextPow2(n: number): number {
@@ -379,6 +363,7 @@ function PlantField({ plants, species, quality, g, uniforms }: FieldProps) {
     const matFor = (k: LayerKey) => (k === "stem" ? stemMat : k === "moss" ? mossMat : leafMat);
     return {
       buf: new InstanceBuffer(),
+      cache: new LayoutCache(),
       geos,
       matFor,
       mats: [leafMat, mossMat, stemMat],
@@ -402,8 +387,9 @@ function PlantField({ plants, species, quality, g, uniforms }: FieldProps) {
   useLayoutEffect(() => {
     const grp = group.current;
     if (!grp) return;
-    const { buf } = res;
+    const { buf, cache } = res;
     buf.reset();
+    cache.beginFrame();
     for (const p of plants) {
       const look = species[p.speciesId];
       if (!look) {
@@ -413,13 +399,14 @@ function PlantField({ plants, species, quality, g, uniforms }: FieldProps) {
         }
         continue;
       }
-      layoutPlant(buf, look, p, {
+      cache.layout(buf, look, p, {
         quality,
         baseY: substrateHeight(g.profile, p.x, p.z),
         waterY: g.waterY,
         bounds: { halfW: g.w / 2 - 0.6, halfD: g.d / 2 - 0.6 },
       });
     }
+    cache.endFrame();
     const shadows = quality === "high";
     for (const k of LAYER_KEYS) {
       const layer = buf.layers[k];
@@ -466,7 +453,15 @@ function PlantField({ plants, species, quality, g, uniforms }: FieldProps) {
 
 // ---------------------------------------------------------------------------
 
-function Animator({ uniforms, reducedMotion, onReady }: { uniforms: SharedUniforms; reducedMotion: boolean; onReady?: () => void }) {
+function Animator({
+  uniforms,
+  reducedMotion,
+  onReady,
+}: {
+  uniforms: SharedUniforms;
+  reducedMotion: boolean;
+  onReady?: (() => void) | undefined;
+}) {
   const fired = useRef(false);
   const readyRef = useRef(onReady);
   readyRef.current = onReady;
@@ -484,15 +479,96 @@ function Animator({ uniforms, reducedMotion, onReady }: { uniforms: SharedUnifor
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Composition guides (1.1.0): screen-space SVG over the projected front glass.
+// Pure DOM — never touches the WebGL scene or its lighting.
+
+const GUIDE_COLOR = "#1D1D1F";
+const GUIDE_OPACITY = 0.35;
+
+function GuideOverlay({
+  g,
+  kind,
+  focal,
+  width,
+  height,
+}: {
+  g: TankGeom;
+  kind: CompositionGuide;
+  focal: { x: number; y: number } | undefined;
+  width: number;
+  height: number;
+}) {
+  if (width <= 0 || height <= 0) return null;
+  const rect = frontGlassRect(g, width, height);
+  const lines = guideLines(kind, rect);
+  const fp = focal && Number.isFinite(focal.x) && Number.isFinite(focal.y) ? focalToScreen(g, width, height, focal.x, focal.y) : null;
+  // crisp 1 css px lines: snap to half pixels
+  const snap = (v: number) => Math.round(v) + 0.5;
+  return (
+    <svg
+      data-testid="frontal-guides"
+      data-guides={kind}
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      aria-hidden="true"
+      style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "visible" }}
+    >
+      <g stroke={GUIDE_COLOR} strokeOpacity={GUIDE_OPACITY} strokeWidth={1} fill="none" shapeRendering="crispEdges">
+        {lines.xs.map((x, i) => (
+          <line key={`x${i}`} data-guide="v" x1={snap(x)} x2={snap(x)} y1={rect.top} y2={rect.top + rect.height} />
+        ))}
+        {lines.ys.map((y, i) => (
+          <line key={`y${i}`} data-guide="h" x1={rect.left} x2={rect.left + rect.width} y1={snap(y)} y2={snap(y)} />
+        ))}
+      </g>
+      {fp && (
+        <g data-testid="frontal-focal" stroke={GUIDE_COLOR} strokeOpacity={GUIDE_OPACITY + 0.2} fill="none">
+          <circle cx={fp[0]} cy={fp[1]} r={9} strokeWidth={1} />
+          <circle cx={fp[0]} cy={fp[1]} r={1.5} fill={GUIDE_COLOR} fillOpacity={GUIDE_OPACITY + 0.2} stroke="none" />
+        </g>
+      )}
+    </svg>
+  );
+}
+
+function useElementSize(ref: RefObject<HTMLDivElement | null>): [number, number] {
+  const [size, setSize] = useState<[number, number]>([0, 0]);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const read = () => {
+      const r = el.getBoundingClientRect();
+      setSize((s) => (s[0] === r.width && s[1] === r.height ? s : [r.width, r.height]));
+    };
+    read();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return size;
+}
+
 export function FrontalTank(props: FrontalTankProps): JSX.Element {
   const { tank, species, plants, hardscape, reducedMotion = false, className, onReady } = props;
+  const guides: CompositionGuide = props.guides ?? "none";
+  const bedFront = props.bed?.frontCm;
+  const bedBack = props.bed?.backCm;
   const quality = useMemo(() => resolveQuality(props.quality), [props.quality]);
-  const g = useMemo(() => tankGeom(tank), [tank.widthCm, tank.depthCm, tank.heightCm]); // eslint-disable-line react-hooks/exhaustive-deps
+  const g = useMemo(
+    () => tankGeom(tank, bedFront !== undefined && bedBack !== undefined ? { frontCm: bedFront, backCm: bedBack } : undefined),
+    [tank.widthCm, tank.depthCm, tank.heightCm, bedFront, bedBack], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const uniforms = useMemo(() => makeSharedUniforms(), []);
   const hs = useMemo(() => hardscape ?? [], [hardscape]);
+  const wrap = useRef<HTMLDivElement>(null);
+  const [cw, ch] = useElementSize(wrap);
 
   return (
     <div
+      ref={wrap}
       className={className}
       data-testid={props["data-testid"]}
       style={{ position: "relative", width: "100%", height: "100%", minHeight: 200, background: BG }}
@@ -513,6 +589,7 @@ export function FrontalTank(props: FrontalTankProps): JSX.Element {
         <PlantField plants={plants} species={species} quality={quality} g={g} uniforms={uniforms} />
         <Animator uniforms={uniforms} reducedMotion={reducedMotion} onReady={onReady} />
       </Canvas>
+      {guides !== "none" && <GuideOverlay g={g} kind={guides} focal={props.focalPoint} width={cw} height={ch} />}
     </div>
   );
 }

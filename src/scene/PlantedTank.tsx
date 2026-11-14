@@ -1,5 +1,5 @@
-import { Tank } from "./Tank";
-import { PlantSimple, type PlantSimpleProps } from "./PlantSimple";
+import { Tank } from "./Tank.js";
+import { PlantSimple, type PlantSimpleProps } from "./PlantSimple.js";
 
 /** A single plant descriptor passed to PlantedTank. */
 export interface PlantEntry {
