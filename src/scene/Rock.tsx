@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import * as THREE from "three";
-import { ROCK_BASE, ROCK_HIGHLIGHT } from "../palette";
-import type { RockSpec } from "../types";
+import { ROCK_BASE, ROCK_HIGHLIGHT } from "../palette.js";
+import type { RockSpec } from "../types.js";
 
 interface RockProps {
   spec: RockSpec;

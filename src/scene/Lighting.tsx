@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { useMemo } from "react";
-import type { TankSizeCm } from "../types";
-import { palette } from "../palette";
+import type { TankSizeCm } from "../types.js";
+import { palette } from "../palette.js";
 
 interface LightingProps {
   sizeCm: TankSizeCm;

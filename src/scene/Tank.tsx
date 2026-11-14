@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import * as THREE from "three";
-import { GLASS_TINT, SUBSTRATE_DRY, SUBSTRATE_WET } from "../palette";
-import type { TankSizeCm } from "../types";
+import { GLASS_TINT, SUBSTRATE_DRY, SUBSTRATE_WET } from "../palette.js";
+import type { TankSizeCm } from "../types.js";
 
 /**
  * Props using SI metres — preferred for new call sites.

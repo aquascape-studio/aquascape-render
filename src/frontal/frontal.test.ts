@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { speciesLook, DEFAULT_LEAF_HEX } from "./speciesLook";
-import { InstanceBuffer, layoutPlant, LAYER_KEYS, MAX_LEAVES_PER_PLANT, substrateHeight, type LayoutOptions } from "./layout";
-import { chroma, healthTint, hexToRgb } from "./color";
-import type { PlantVisual, SpeciesLook } from "../contract";
+import { speciesLook, DEFAULT_LEAF_HEX } from "./speciesLook.js";
+import { InstanceBuffer, layoutPlant, LAYER_KEYS, MAX_LEAVES_PER_PLANT, substrateHeight, type LayoutOptions } from "./layout.js";
+import { chroma, healthTint, hexToRgb } from "./color.js";
+import type { PlantVisual, SpeciesLook } from "../contract.js";
 
 const OPTS: LayoutOptions = { quality: "high", baseY: 0, waterY: 30 };
 

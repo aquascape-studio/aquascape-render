@@ -1,7 +1,7 @@
 import { useMemo, useRef, useEffect } from "react";
 import * as THREE from "three";
-import { LEAF_BASE, LEAF_TIP, STEM_COLOR } from "../palette";
-import type { PlantSpec } from "../types";
+import { LEAF_BASE, LEAF_TIP, STEM_COLOR } from "../palette.js";
+import type { PlantSpec } from "../types.js";
 
 interface PlantProps {
   spec: PlantSpec;

@@ -1,8 +1,8 @@
 import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { WATER_BASE, WATER_DEEP } from "../palette";
-import type { TankSizeCm } from "../types";
+import { WATER_BASE, WATER_DEEP } from "../palette.js";
+import type { TankSizeCm } from "../types.js";
 
 interface WaterVolumeProps {
   sizeCm: TankSizeCm;

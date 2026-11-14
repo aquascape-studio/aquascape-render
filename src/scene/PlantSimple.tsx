@@ -1,14 +1,14 @@
 import { useMemo } from "react";
 import * as THREE from "three";
-import { LEAF_BASE, STEM_COLOR } from "../palette";
+import { LEAF_BASE, STEM_COLOR } from "../palette.js";
 
 export interface PlantSimpleProps {
   /** World-space position in metres (x, y, z). Y=0 is the tank floor. */
   position: [number, number, number];
   /** Total plant height in metres. Defaults to 0.12 m (12 cm). */
-  height?: number;
+  height?: number | undefined;
   /** Leaf / sphere cluster colour as a CSS hex string or Three.js hex number. */
-  color?: string | number;
+  color?: string | number | undefined;
 }
 
 /**
