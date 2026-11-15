@@ -39,14 +39,21 @@ export const ROLE_SHAPES: Record<StoneRole | "none", RoleShape> = {
 };
 
 export const DEFAULT_BURIED_FRAC = 0.15;
+/** suteishi (scattered fill) default — "mostly buried" (contract 1.2.0 doc fix). */
+export const DEFAULT_BURIED_FRAC_SUTEISHI = 0.35;
+
+/** Default buriedFrac for a stone role (1.2.0: suteishi 0.35, others 0.15). */
+export function defaultBuriedFrac(role: StoneRole | undefined): number {
+  return role === "suteishi" ? DEFAULT_BURIED_FRAC_SUTEISHI : DEFAULT_BURIED_FRAC;
+}
 
 export function roleShape(role: StoneRole | undefined): RoleShape {
   return ROLE_SHAPES[role ?? "none"] ?? ROLE_SHAPES.none;
 }
 
-export function buriedFrac(h: Pick<HardscapeVisual, "buriedFrac">): number {
+export function buriedFrac(h: Pick<HardscapeVisual, "buriedFrac" | "role">): number {
   const b = h.buriedFrac;
-  return typeof b === "number" && Number.isFinite(b) ? Math.min(0.6, Math.max(0, b)) : DEFAULT_BURIED_FRAC;
+  return typeof b === "number" && Number.isFinite(b) ? Math.min(0.6, Math.max(0, b)) : defaultBuriedFrac(h.role);
 }
 
 export interface StonePlacement {

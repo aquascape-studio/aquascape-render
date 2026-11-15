@@ -290,11 +290,22 @@ function emitLeaf(
 ): boolean {
   if (c.emitted >= c.cap) return false;
   if (c.bounds) {
-    const bw = c.bounds.halfW, bd = c.bounds.halfD;
+    // keep the whole leaf blade (base, tip and its half-width) inside the
+    // glass: clamp the base, then mirror the direction if the tip pokes out
+    const hw = width * 0.5;
+    const bw = Math.max(0, c.bounds.halfW - hw), bd = Math.max(0, c.bounds.halfD - hw);
     px = clamp(px, -bw, bw);
     pz = clamp(pz, -bd, bd);
     if (Math.abs(px + dx * length) > bw) dx = -dx;
     if (Math.abs(pz + dz * length) > bd) dz = -dz;
+    // still too long for the gap (long straps near the glass): steepen it so
+    // the tip lands on the bound, keeping |D| = 1
+    let steepen = false;
+    if (Math.abs(px + dx * length) > bw) { dx = (Math.sign(dx) * bw - px) / length; steepen = true; }
+    if (Math.abs(pz + dz * length) > bd) { dz = (Math.sign(dz) * bd - pz) / length; steepen = true; }
+    if (steepen) {
+      dy = Math.sqrt(Math.max(0, 1 - dx * dx - dz * dz)) * (dy < 0 ? -1 : 1);
+    }
   }
   faceNormal(dx, dy, dz, bias, jx, jz, nrm);
   leafColor(c.pal, youth, ao, v, col);
@@ -350,9 +361,36 @@ interface Shoot {
 
 const SHOOT_SEGMENTS = 3;
 
+/**
+ * Keep a shoot's curved stem inside the glass (11-14 note: stems near the
+ * side glass leaned through it). Clamps the base and scales the lean / bend
+ * down just enough that every point of the curve stays within |x| ≤ limX,
+ * |z| ≤ limZ. Leaves are then kept inside by emitLeaf.
+ */
+function containShoot(sh: Shoot, limX: number, limZ: number): void {
+  limX = Math.max(0, limX);
+  limZ = Math.max(0, limZ);
+  sh.bx = clamp(sh.bx, -limX, limX);
+  sh.bz = clamp(sh.bz, -limZ, limZ);
+  let s = 1;
+  for (let k = 1; k <= 4; k++) {
+    const h = (sh.len * k) / 4;
+    const off = sh.slope * h + (sh.bend * h * h) / sh.len;
+    const ox = sh.lx * off, oz = sh.lz * off;
+    if (sh.bx + ox > limX) s = Math.min(s, (limX - sh.bx) / ox);
+    else if (sh.bx + ox < -limX) s = Math.min(s, (-limX - sh.bx) / ox);
+    if (sh.bz + oz > limZ) s = Math.min(s, (limZ - sh.bz) / oz);
+    else if (sh.bz + oz < -limZ) s = Math.min(s, (-limZ - sh.bz) / oz);
+  }
+  s = Math.max(0, s);
+  sh.slope *= s;
+  sh.bend *= s;
+}
+
 /** One stem shoot: curved stem + leaves in natural phyllotaxy. */
 function growShoot(c: Ctx, sh: Shoot, stream: number, internode: number, perNode: number, L: number, W: number, stemW: number): boolean {
   const { look } = c;
+  if (c.bounds) containShoot(sh, c.bounds.halfW - stemW, c.bounds.halfD - stemW);
   // stem body as a few straight segments along the curve
   for (let sgi = 0; sgi < SHOOT_SEGMENTS; sgi++) {
     if (c.emitted >= c.cap) return false;
@@ -679,8 +717,8 @@ function layoutEpiphyte(c: Ctx): void {
     const keep = c.thin + (1 - c.thin) * (i / n);
     if (t[o]! > keep) continue;
     const u = t[o + 2]! - 0.5;
-    const bx = c.x + Math.cos(rhAng) * rhLen * u;
-    const bz = c.z + Math.sin(rhAng) * rhLen * u + (t[o + 3]! * 2 - 1) * S * 0.08;
+    let bx = c.x + Math.cos(rhAng) * rhLen * u;
+    let bz = c.z + Math.sin(rhAng) * rhLen * u + (t[o + 3]! * 2 - 1) * S * 0.08;
     const size = (0.65 + 0.45 * t[o + 4]!) * gs;
     const len = L * size;
     const lift = Math.pow(t[o + 5]!, 1.5) * Math.max(0, H - len * 0.8) * 0.3;
@@ -689,9 +727,15 @@ function layoutEpiphyte(c: Ctx): void {
     const az = Math.PI * 0.5 + (t[o + 7]! * 2 - 1) * Math.PI * 0.85;
     dirFrom(elev, az, dir);
     const pet = len * 0.28;
-    const px = bx + dir[0]! * pet * 0.6;
+    let px = bx + dir[0]! * pet * 0.6;
     const py = c.y + lift + pet * 0.8;
-    const pz = bz + dir[2]! * pet * 0.6;
+    let pz = bz + dir[2]! * pet * 0.6;
+    if (c.bounds) {
+      // rhizome + petiole stay inside the glass too
+      const bw = c.bounds.halfW - 0.3, bd = c.bounds.halfD - 0.3;
+      bx = clamp(bx, -bw, bw); bz = clamp(bz, -bd, bd);
+      px = clamp(px, -bw, bw); pz = clamp(pz, -bd, bd);
+    }
     if (c.emitted < c.cap) {
       c.buf.add("stem", bx, c.y + lift * 0.3, bz, px - bx, py - c.y - lift * 0.3, pz - bz, 0, 0, 1,
         Math.hypot(px - bx, py - c.y - lift * 0.3, pz - bz), clamp(W * 0.1, 0.1, 0.3), c.pal.stem);

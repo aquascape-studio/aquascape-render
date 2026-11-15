@@ -1,7 +1,16 @@
 import { createRoot } from "react-dom/client";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { FrontalTank, speciesLook } from "../src/index.js";
-import type { BotanyRecordLike, CompositionGuide, HardscapeVisual, PlantVisual, SpeciesLook } from "../src/contract.js";
+import { footprintContains } from "../src/index.js";
+import type {
+  BotanyRecordLike,
+  CompositionGuide,
+  EditMoveEvent,
+  EditTarget,
+  HardscapeVisual,
+  PlantVisual,
+  SpeciesLook,
+} from "../src/contract.js";
 
 // Subset of aquascape-botany records (structural BotanyRecordLike only).
 const RECORDS: BotanyRecordLike[] = [
@@ -152,22 +161,66 @@ function App() {
     }));
   }, [t]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ---- editable mode (?edit=1, contract 1.2.0): controlled positions ----
+  const edit = params.get("edit") === "1";
+  const stones = iwagumi ? IWAGUMI_STONES : HARDSCAPE;
+  const [hsState, setHsState] = useState<HardscapeVisual[]>(stones);
+  const [posOverride, setPosOverride] = useState<Record<string, { x: number; z: number }>>({});
+  const [selected, setSelected] = useState<EditTarget | null>(() => {
+    const sel = params.get("select");
+    if (!sel) return null;
+    return stones.some((h) => h.id === sel) ? { kind: "hardscape", id: sel } : { kind: "plant", id: sel };
+  });
+  const [lastEvent, setLastEvent] = useState<string>("");
+  const shownPlants = useMemo(
+    () => (edit ? plants.map((p) => (posOverride[p.id] ? { ...p, ...posOverride[p.id] } : p)) : plants),
+    [edit, plants, posOverride],
+  );
+  const onMove = useCallback((e: EditMoveEvent) => {
+    setLastEvent(`${e.phase} ${e.target.kind}:${e.target.id} x=${e.x.toFixed(1)} z=${e.z.toFixed(1)}`);
+    if (e.target.kind === "hardscape") {
+      setHsState((hs) => hs.map((h) => (h.id === e.target.id ? { ...h, x: e.x, z: e.z } : h)));
+    } else {
+      setPosOverride((o) => ({ ...o, [e.target.id]: { x: e.x, z: e.z } }));
+    }
+  }, []);
+  // demo of the web-side rule: plants dropped on a stone footprint are flagged
+  const onStone =
+    selected?.kind === "plant" &&
+    (() => {
+      const p = shownPlants.find((v) => v.id === selected.id);
+      return !!p && hsState.some((h) => footprintContains(h, p.x, p.z, 0.5));
+    })();
+
   return (
-    <FrontalTank
-      tank={{ widthCm: 60, depthCm: 36, heightCm: 36 }}
-      species={species}
-      plants={plants}
-      hardscape={iwagumi ? IWAGUMI_STONES : HARDSCAPE}
-      quality={quality}
-      guides={guides}
-      focalPoint={iwagumi ? { x: -10, y: 20 } : undefined}
-      bed={iwagumi ? { frontCm: 2, backCm: 9 } : undefined}
-      reducedMotion={params.get("rm") === "1"}
-      data-testid="frontal-tank"
-      onReady={() => {
-        (window as unknown as { __ready: boolean }).__ready = true;
-      }}
-    />
+    <>
+      <FrontalTank
+        tank={{ widthCm: 60, depthCm: 36, heightCm: 36 }}
+        species={species}
+        plants={shownPlants}
+        hardscape={edit ? hsState : stones}
+        quality={quality}
+        guides={guides}
+        focalPoint={iwagumi ? { x: -10, y: 20 } : undefined}
+        bed={iwagumi ? { frontCm: 2, backCm: 9 } : undefined}
+        reducedMotion={params.get("rm") === "1"}
+        data-testid="frontal-tank"
+        editable={edit}
+        selected={edit ? selected : undefined}
+        onSelect={edit ? setSelected : undefined}
+        onMove={edit ? onMove : undefined}
+        onReady={() => {
+          (window as unknown as { __ready: boolean }).__ready = true;
+        }}
+      />
+      {edit && !params.has("nohud") && (
+        <div id="edit-hud" data-testid="edit-hud">
+          {selected ? `${selected.kind}: ${selected.id}` : "click a stone or plant"}
+          {onStone ? " — on a stone" : ""}
+          {lastEvent ? ` · ${lastEvent}` : ""}
+        </div>
+      )}
+    </>
   );
 }
 

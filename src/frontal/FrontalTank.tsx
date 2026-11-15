@@ -12,11 +12,10 @@ import type { JSX, RefObject } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import type { CompositionGuide, FrontalTankProps, HardscapeVisual, PlantVisual, SpeciesLook } from "../contract.js";
+import type { CompositionGuide, EditTarget, FrontalTankProps, HardscapeVisual, PlantVisual, SpeciesLook } from "../contract.js";
+import { EditController, SelectionHalo, haloSpec, type EditPropsSnapshot } from "./edit.js";
 import {
-  InstanceBuffer,
   LAYER_KEYS,
-  LayoutCache,
   substrateHeight,
   type LayerKey,
   type RenderQuality,
@@ -29,6 +28,7 @@ import {
 } from "./geometry.js";
 import { makeFoliageMaterial, makeSharedUniforms, makeSubstrateMaterial, type SharedUniforms } from "./materials.js";
 import { resolveQuality } from "./quality.js";
+import { FieldSync } from "./fieldSync.js";
 import { stonePlacement } from "./stones.js";
 import { fitCamera, focalToScreen, frontGlassRect, guideLines, tankGeom, type TankGeom } from "./tank.js";
 
@@ -259,61 +259,138 @@ function Substrate({ g, quality }: { g: TankGeom; quality: RenderQuality }) {
 
 const STONE_TONES = ["#a7a39c", "#9d9992", "#aeaaa3", "#99958f"];
 
-function Hardscape({ items, g, quality }: { items: HardscapeVisual[]; g: TankGeom; quality: RenderQuality }) {
-  const built = useMemo(
-    () =>
-      items.map((h) => {
-        const place = stonePlacement(h, g.profile);
-        if (h.kind === "wood") {
-          const parts = makeBranchGeometry(h.sizeCm, h.seed);
-          return { h, place, parts, stone: null as THREE.BufferGeometry | null };
-        }
-        return { h, place, parts: [] as THREE.BufferGeometry[], stone: makeStoneGeometry(h.sizeCm, h.seed, h.role) };
-      }),
-    [items, g],
-  );
-  const stoneMats = useMemo(
-    () =>
-      STONE_TONES.map(
-        (c) =>
-          new THREE.MeshStandardMaterial({ color: c, vertexColors: true, roughness: 0.62, metalness: 0, envMapIntensity: 0.9 }),
-      ),
-    [],
-  );
-  const woodMat = useMemo(
-    () => new THREE.MeshPhysicalMaterial({ color: "#86644a", roughness: 0.55, clearcoat: 0.2, clearcoatRoughness: 0.5 }),
-    [],
-  );
+/** Max lift of the dragged item (contract 1.2.0: ≤ 0.5 cm). */
+const DRAG_LIFT_CM = 0.4;
+
+type StoneMats = { stones: THREE.MeshStandardMaterial[]; wood: THREE.MeshPhysicalMaterial };
+
+/**
+ * One hardscape piece. Geometry depends only on shape inputs (size, seed,
+ * role, kind), so dragging (x/z changes) never rebuilds it — only the
+ * placement group moves.
+ */
+function HardscapeItem({
+  h,
+  g,
+  mats,
+  shadows,
+  lifted,
+  reducedMotion,
+  roots,
+}: {
+  h: HardscapeVisual;
+  g: TankGeom;
+  mats: StoneMats;
+  shadows: boolean;
+  lifted: boolean;
+  reducedMotion: boolean;
+  roots: Map<string, THREE.Object3D> | null;
+}) {
+  const [sw, shh, sd] = h.sizeCm;
+  const geo = useMemo(() => {
+    if (h.kind === "wood") return { parts: makeBranchGeometry([sw, shh, sd], h.seed), stone: null as THREE.BufferGeometry | null };
+    return { parts: [] as THREE.BufferGeometry[], stone: makeStoneGeometry([sw, shh, sd], h.seed, h.role) };
+  }, [h.kind, sw, shh, sd, h.seed, h.role]);
   useEffect(
     () => () => {
-      for (const b of built) {
-        b.stone?.dispose();
-        b.parts.forEach((p) => p.dispose());
-      }
+      geo.stone?.dispose();
+      geo.parts.forEach((p) => p.dispose());
     },
-    [built],
+    [geo],
   );
-  useEffect(() => () => [...stoneMats, woodMat].forEach((m) => m.dispose()), [stoneMats, woodMat]);
+  const place = useMemo(() => stonePlacement(h, g.profile), [h, g]);
+  const outer = useRef<THREE.Group>(null);
+  const lift = useRef(0);
+  const invalidate = useThree((st) => st.invalidate);
+  const target = lifted && !reducedMotion ? DRAG_LIFT_CM : 0;
+
+  useLayoutEffect(() => {
+    const o = outer.current;
+    if (!o) return;
+    o.userData.hardscapeId = h.id;
+    if (roots) roots.set(h.id, o);
+    return () => {
+      if (roots && roots.get(h.id) === o) roots.delete(h.id);
+    };
+  }, [h.id, roots]);
+
+  useLayoutEffect(() => {
+    // reduced motion / not lifted: snap (no animation)
+    if (reducedMotion || target === 0) {
+      lift.current = target;
+      if (outer.current) outer.current.position.y = place.bottomY + target;
+      invalidate();
+    }
+  }, [target, reducedMotion, place.bottomY, invalidate]);
+
+  useFrame((_, dt) => {
+    const o = outer.current;
+    if (!o || lift.current === target) return;
+    const k = 1 - Math.exp(-Math.min(0.1, dt) * 18);
+    lift.current += (target - lift.current) * k;
+    if (Math.abs(target - lift.current) < 0.005) lift.current = target;
+    o.position.y = place.bottomY + lift.current;
+  });
+
+  return (
+    // outer group: bed placement + lean (in tank space); inner: rotation about y
+    <group ref={outer} position={[h.x, place.bottomY + lift.current, h.z]} rotation={[place.leanX, 0, place.leanZ]}>
+      <group rotation={[0, h.rotationY, 0]}>
+        {geo.stone && (
+          <mesh
+            geometry={geo.stone}
+            material={mats.stones[Math.abs(h.seed) % mats.stones.length]}
+            castShadow={shadows}
+            receiveShadow={shadows}
+          />
+        )}
+        {geo.parts.map((p, i) => (
+          <mesh key={i} geometry={p} material={mats.wood} castShadow={shadows} receiveShadow={shadows} />
+        ))}
+      </group>
+    </group>
+  );
+}
+
+function Hardscape({
+  items,
+  g,
+  quality,
+  liftedId,
+  reducedMotion,
+  roots,
+}: {
+  items: HardscapeVisual[];
+  g: TankGeom;
+  quality: RenderQuality;
+  liftedId: string | null;
+  reducedMotion: boolean;
+  roots: Map<string, THREE.Object3D> | null;
+}) {
+  const mats = useMemo<StoneMats>(
+    () => ({
+      stones: STONE_TONES.map(
+        (c) => new THREE.MeshStandardMaterial({ color: c, vertexColors: true, roughness: 0.62, metalness: 0, envMapIntensity: 0.9 }),
+      ),
+      wood: new THREE.MeshPhysicalMaterial({ color: "#86644a", roughness: 0.55, clearcoat: 0.2, clearcoatRoughness: 0.5 }),
+    }),
+    [],
+  );
+  useEffect(() => () => [...mats.stones, mats.wood].forEach((m) => m.dispose()), [mats]);
   const shadows = quality === "high";
   return (
     <group>
-      {built.map(({ h, place, parts, stone }) => (
-        // outer group: bed placement + lean (in tank space); inner: rotation about y
-        <group key={h.id} position={[h.x, place.bottomY, h.z]} rotation={[place.leanX, 0, place.leanZ]}>
-          <group rotation={[0, h.rotationY, 0]}>
-            {stone && (
-              <mesh
-                geometry={stone}
-                material={stoneMats[Math.abs(h.seed) % stoneMats.length]}
-                castShadow={shadows}
-                receiveShadow={shadows}
-              />
-            )}
-            {parts.map((p, i) => (
-              <mesh key={i} geometry={p} material={woodMat} castShadow={shadows} receiveShadow={shadows} />
-            ))}
-          </group>
-        </group>
+      {items.map((h) => (
+        <HardscapeItem
+          key={h.id}
+          h={h}
+          g={g}
+          mats={mats}
+          shadows={shadows}
+          lifted={liftedId === h.id}
+          reducedMotion={reducedMotion}
+          roots={roots}
+        />
       ))}
     </group>
   );
@@ -348,9 +425,14 @@ interface FieldProps {
   quality: RenderQuality;
   g: TankGeom;
   uniforms: SharedUniforms;
+  /** id of the plant being dragged (lifted DRAG_LIFT_CM), 1.2.0 */
+  liftedId?: string | null | undefined;
 }
 
-function PlantField({ plants, species, quality, g, uniforms }: FieldProps) {
+/** Leaf instances stay this far inside the glass (also covers GPU sway). */
+const GLASS_LEAF_MARGIN = 0.7;
+
+function PlantField({ plants, species, quality, g, uniforms, liftedId = null }: FieldProps) {
   const group = useRef<THREE.Group>(null);
   const invalidate = useThree((s) => s.invalidate);
 
@@ -362,8 +444,7 @@ function PlantField({ plants, species, quality, g, uniforms }: FieldProps) {
     for (const k of LAYER_KEYS) geos[k] = makeLayerGeometry(k);
     const matFor = (k: LayerKey) => (k === "stem" ? stemMat : k === "moss" ? mossMat : leafMat);
     return {
-      buf: new InstanceBuffer(),
-      cache: new LayoutCache(),
+      sync: new FieldSync(),
       geos,
       matFor,
       mats: [leafMat, mossMat, stemMat],
@@ -387,34 +468,28 @@ function PlantField({ plants, species, quality, g, uniforms }: FieldProps) {
   useLayoutEffect(() => {
     const grp = group.current;
     if (!grp) return;
-    const { buf, cache } = res;
-    buf.reset();
-    cache.beginFrame();
+    const { sync } = res;
+    const bounds = { halfW: g.w / 2 - GLASS_LEAF_MARGIN, halfD: g.d / 2 - GLASS_LEAF_MARGIN };
+    sync.update(plants, species, (p) => ({
+      quality,
+      baseY: substrateHeight(g.profile, p.x, p.z) + (p.id === liftedId ? DRAG_LIFT_CM : 0),
+      waterY: g.waterY,
+      bounds,
+    }));
     for (const p of plants) {
-      const look = species[p.speciesId];
-      if (!look) {
-        if (!warned.current.has(p.speciesId)) {
-          warned.current.add(p.speciesId);
-          console.warn(`[FrontalTank] no SpeciesLook for speciesId "${p.speciesId}"`);
-        }
-        continue;
+      if (!species[p.speciesId] && !warned.current.has(p.speciesId)) {
+        warned.current.add(p.speciesId);
+        console.warn(`[FrontalTank] no SpeciesLook for speciesId "${p.speciesId}"`);
       }
-      cache.layout(buf, look, p, {
-        quality,
-        baseY: substrateHeight(g.profile, p.x, p.z),
-        waterY: g.waterY,
-        bounds: { halfW: g.w / 2 - 0.6, halfD: g.d / 2 - 0.6 },
-      });
     }
-    cache.endFrame();
     const shadows = quality === "high";
-    for (const k of LAYER_KEYS) {
-      const layer = buf.layers[k];
+    LAYER_KEYS.forEach((k, li) => {
+      const layer = sync.buf.layers[k];
       const n = layer.count;
       let mesh = res.meshes[k];
       if (n === 0) {
         if (mesh) mesh.count = 0;
-        continue;
+        return;
       }
       if (!mesh || mesh.instanceMatrix.count < n) {
         const cap = nextPow2(Math.ceil(n * 1.3));
@@ -430,23 +505,27 @@ function PlantField({ plants, species, quality, g, uniforms }: FieldProps) {
         grp.add(m);
         res.meshes[k] = m;
         mesh = m;
+        sync.markLayerDirty(li);
       }
       mesh.castShadow = shadows;
       mesh.receiveShadow = shadows;
-      (mesh.instanceMatrix.array as Float32Array).set(layer.matrices.subarray(0, n * 16));
+      mesh.count = n;
+      // upload only the instances that changed (dragging one plant ⇒ its slot)
+      const { lo, hi } = sync.dirty[li]!;
+      if (hi <= lo) return;
+      (mesh.instanceMatrix.array as Float32Array).set(layer.matrices.subarray(lo * 16, hi * 16), lo * 16);
       const dst = mesh.instanceColor!.array as Float32Array;
       const src = layer.colors;
-      for (let i = 0; i < n * 3; i++) dst[i] = srgbToLinear(src[i]!);
-      mesh.count = n;
+      for (let i = lo * 3; i < hi * 3; i++) dst[i] = srgbToLinear(src[i]!);
       mesh.instanceMatrix.clearUpdateRanges();
-      mesh.instanceMatrix.addUpdateRange(0, n * 16);
+      mesh.instanceMatrix.addUpdateRange(lo * 16, (hi - lo) * 16);
       mesh.instanceMatrix.needsUpdate = true;
       mesh.instanceColor!.clearUpdateRanges();
-      mesh.instanceColor!.addUpdateRange(0, n * 3);
+      mesh.instanceColor!.addUpdateRange(lo * 3, (hi - lo) * 3);
       mesh.instanceColor!.needsUpdate = true;
-    }
+    });
     invalidate();
-  }, [plants, species, quality, g, res, invalidate]);
+  }, [plants, species, quality, g, res, invalidate, liftedId]);
 
   return <group ref={group} />;
 }
@@ -553,6 +632,7 @@ function useElementSize(ref: RefObject<HTMLDivElement | null>): [number, number]
 
 export function FrontalTank(props: FrontalTankProps): JSX.Element {
   const { tank, species, plants, hardscape, reducedMotion = false, className, onReady } = props;
+  const editable = props.editable === true;
   const guides: CompositionGuide = props.guides ?? "none";
   const bedFront = props.bed?.frontCm;
   const bedBack = props.bed?.backCm;
@@ -566,11 +646,23 @@ export function FrontalTank(props: FrontalTankProps): JSX.Element {
   const wrap = useRef<HTMLDivElement>(null);
   const [cw, ch] = useElementSize(wrap);
 
+  // --- 1.2.0 editing -------------------------------------------------------
+  const [dragging, setDragging] = useState<EditTarget | null>(null);
+  const editRef = useRef<EditPropsSnapshot>({ plants, hardscape: hs, species, onSelect: props.onSelect, onMove: props.onMove });
+  editRef.current = { plants, hardscape: hs, species, onSelect: props.onSelect, onMove: props.onMove };
+  const roots = useMemo(() => new Map<string, THREE.Object3D>(), []);
+  useEffect(() => {
+    if (!editable) setDragging(null);
+  }, [editable]);
+  const drag = editable ? dragging : null;
+  const halo = editable ? haloSpec(props.selected, plants, hs) : null;
+
   return (
     <div
       ref={wrap}
       className={className}
       data-testid={props["data-testid"]}
+      data-editable={editable ? "true" : undefined}
       style={{ position: "relative", width: "100%", height: "100%", minHeight: 200, background: BG }}
     >
       <Canvas
@@ -585,8 +677,24 @@ export function FrontalTank(props: FrontalTankProps): JSX.Element {
         <Lights g={g} quality={quality} uniforms={uniforms} />
         <TankShell g={g} />
         <Substrate g={g} quality={quality} />
-        <Hardscape items={hs} g={g} quality={quality} />
-        <PlantField plants={plants} species={species} quality={quality} g={g} uniforms={uniforms} />
+        <Hardscape
+          items={hs}
+          g={g}
+          quality={quality}
+          liftedId={drag?.kind === "hardscape" ? drag.id : null}
+          reducedMotion={reducedMotion}
+          roots={editable ? roots : null}
+        />
+        <PlantField
+          plants={plants}
+          species={species}
+          quality={quality}
+          g={g}
+          uniforms={uniforms}
+          liftedId={drag?.kind === "plant" && !reducedMotion ? drag.id : null}
+        />
+        {editable && <SelectionHalo g={g} spec={halo} />}
+        {editable && <EditController g={g} props={editRef} roots={roots} onDragChange={setDragging} />}
         <Animator uniforms={uniforms} reducedMotion={reducedMotion} onReady={onReady} />
       </Canvas>
       {guides !== "none" && <GuideOverlay g={g} kind={guides} focal={props.focalPoint} width={cw} height={ch} />}
