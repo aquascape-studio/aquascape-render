@@ -9,7 +9,7 @@ import type { HardscapeVisual, PlantVisual, StoneRole } from "../contract.js";
 import { makeStoneGeometry } from "./geometry.js";
 import { InstanceBuffer, LAYER_KEYS, LayoutCache, layoutPlant, substrateHeight, type LayoutOptions } from "./layout.js";
 import { speciesLook } from "./speciesLook.js";
-import { DEFAULT_BURIED_FRAC, stonePlacement } from "./stones.js";
+import { defaultBuriedFrac, stonePlacement } from "./stones.js";
 import { focalToScreen, frontGlassRect, guideFractions, guideLines, tankGeom } from "./tank.js";
 
 const TANK = { widthCm: 60, depthCm: 36, heightCm: 36 };
@@ -66,7 +66,7 @@ describe("buriedFrac (1.1.0)", () => {
           const h = stone({ role, x, z, rotationY: rot, buriedFrac: bf });
           const p = stonePlacement(h, g.profile);
           for (const [px, pz] of p.footprint) expect(p.bottomY).toBeLessThan(substrateHeight(g.profile, px, pz));
-          const frac = bf ?? DEFAULT_BURIED_FRAC;
+          const frac = bf ?? defaultBuriedFrac(role);
           // at least `buriedFrac` of the height is below the bed at the centre
           expect(substrateHeight(g.profile, x, z) - p.bottomY).toBeGreaterThanOrEqual(frac * p.height - 1e-9);
         }

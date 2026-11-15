@@ -21,4 +21,4 @@ export { Aquarium } from "./Aquarium.js";
 export * from "./contract.js";
 
 // FrontalTank (contract v1) — stylized front-view tank
-export { FrontalTank, speciesLook, resolveQuality } from "./frontal/index.js";
+export { FrontalTank, speciesLook, resolveQuality, footprintContains } from "./frontal/index.js";
