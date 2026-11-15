@@ -16,7 +16,42 @@
  * smooth sculptural stones.
  */
 
-export const RENDER_CONTRACT_VERSION = "1.1.0" as const;
+export const RENDER_CONTRACT_VERSION = "1.2.0" as const;
+
+/*
+ * 1.2.0 (2026-11-15, additive — drag editing, P2 编辑器):
+ *  - FrontalTankProps.editable (default false). When false the component
+ *    behaves exactly like 1.1.x (no picking, no cursor change, no handlers).
+ *  - Picking: pointer-down on a hardscape piece or a plant instance selects
+ *    it (onSelect). Pointer-down on empty water / bed → onSelect(null).
+ *    Plants are picked per PlantVisual (one id = one clump), not per leaf.
+ *  - Dragging (front view only, camera never moves): horizontal pointer
+ *    motion → x; vertical pointer motion → z (screen up = towards the back
+ *    glass, −z). Map so that dragging across the visible tank width moves
+ *    the full tank width, and dragging over 40% of the visible tank height
+ *    moves the full depth. Emit onMove with phase "start" | "move" | "end";
+ *    Escape or pointercancel during a drag emits phase "cancel" with the
+ *    ORIGINAL x/z. Positions are clamped 1 cm inside the glass.
+ *    The renderer does NOT move anything itself: the caller updates the
+ *    `plants` / `hardscape` props (controlled component). Throttle "move"
+ *    to ≤ 1 per animation frame.
+ *  - Selection visual: selected item gets a soft halo ring on the bed under
+ *    its footprint (2 px-ish, primary #0A6F78 at ~60%), plus a subtle
+ *    lift (≤ 0.5 cm) while dragging. No outlines on leaves, no gizmos.
+ *    Hover: cursor "grab"; dragging: "grabbing". Respect reducedMotion
+ *    (no lift animation).
+ *  - Touch: one-finger drag works the same (touch-action: none on the canvas
+ *    only while editable). Hit targets: a plant/stone whose projected size
+ *    is < 44 css px is picked within a 22 px radius of its centre.
+ *  - Doc fixes from 1.1.0 objections:
+ *    · suteishi default buriedFrac is 0.35 (other roles 0.15).
+ *    · bed.frontCm / backCm and focalPoint.y are measured from the tank
+ *      floor glass's nominal substrate plane y = 0 (sim origin), NOT from
+ *      the local sloped bed surface.
+ *    · Hardscape footprint = ellipse centred at (x, z), half-axes
+ *      sizeCm[0]/2 (along local x) and sizeCm[2]/2 (along local z),
+ *      rotated by rotationY. See footprintContains().
+ */
 
 /*
  * 1.1.0 (2026-11-13, additive — style templates + composition guides):
@@ -120,6 +155,21 @@ export type StoneRole = "oyaishi" | "fukuishi" | "soeishi" | "suteishi";
 /** Composition guide overlay. */
 export type CompositionGuide = "none" | "thirds" | "golden";
 
+/** What can be picked / dragged in an editable FrontalTank (1.2.0). */
+export interface EditTarget {
+  kind: "hardscape" | "plant";
+  /** HardscapeVisual.id or PlantVisual.id */
+  id: string;
+}
+
+export interface EditMoveEvent {
+  target: EditTarget;
+  phase: "start" | "move" | "end" | "cancel";
+  /** proposed position, tank cm, clamped 1 cm inside the glass */
+  x: number;
+  z: number;
+}
+
 export interface FrontalTankProps {
   tank: { widthCm: number; depthCm: number; heightCm: number };
   /** keyed by speciesId; every plants[i].speciesId must be present */
@@ -141,6 +191,14 @@ export interface FrontalTankProps {
   reducedMotion?: boolean | undefined;
   className?: string | undefined;
   "data-testid"?: string | undefined;
+  /** enable picking + drag editing (1.2.0), default false */
+  editable?: boolean | undefined;
+  /** controlled selection (1.2.0); draws the halo */
+  selected?: EditTarget | null | undefined;
+  /** pointer-down pick result; null = clicked empty space (1.2.0) */
+  onSelect?: ((target: EditTarget | null) => void) | undefined;
+  /** drag lifecycle (1.2.0); caller updates props to actually move things */
+  onMove?: ((e: EditMoveEvent) => void) | undefined;
   /** fired once after the first frame is rendered */
   onReady?: (() => void) | undefined;
 }
@@ -170,4 +228,7 @@ export interface BotanyRecordLike {
  *   export function FrontalTank(props: FrontalTankProps): JSX.Element
  *   export function speciesLook(record: BotanyRecordLike): SpeciesLook
  *     — uses record.visual when present, otherwise growthForm defaults.
+ *   export function footprintContains(h: HardscapeVisual, x: number, z: number, marginCm?: number): boolean
+ *     — (1.2.0) true when (x, z) lies inside h's footprint ellipse grown by
+ *       marginCm (default 0). Pure; used by web to reject plant drops on stones.
  */
