@@ -16,7 +16,46 @@
  * smooth sculptural stones.
  */
 
-export const RENDER_CONTRACT_VERSION = "1.2.0" as const;
+export const RENDER_CONTRACT_VERSION = "1.3.0" as const;
+
+/*
+ * 1.3.0 (2026-11-16, additive — driftwood + resizable hardscape, P2 编辑器):
+ *  - HardscapeVisual.woodStyle (optional, kind "wood" only, default "branchy"):
+ *    · "branchy" — spider-wood: a short buried base splitting into 4–7 slender
+ *      tapered branches that fan UP and outward (canopy silhouette), a few
+ *      secondary twigs. Overall bounding box = sizeCm.
+ *    · "root"    — one thick trunk leaning ~30–45° (lean direction from seed),
+ *      roots flaring at the base into the bed, 2–4 branches reaching towards
+ *      the far side; the classic Nature-style "tree" focal piece.
+ *    · "log"     — a low, mostly horizontal bog-wood chunk with 1–2 short
+ *      stubs; reads as a ledge for epiphytes.
+ *    Look (ROADMAP 视觉风格): smooth, sculptural, softly rounded tubes with
+ *    continuous taper and soft joints — NO bark texture, no hard creases.
+ *    Warm stylized brown, slightly lighter at the tips (≈ #7A5A43 → #A88466),
+ *    low gloss. Wood default buriedFrac is 0.05 (only the base touches the bed).
+ *    Wood is pickable/draggable like stones (1.2.0 rules).
+ *  - Resizing: callers resize by changing sizeCm (uniformly or not). Changing
+ *    sizeCm / rotationY / woodStyle / role of ONE piece must only rebuild that
+ *    piece's geometry (cache keyed by id + seed + kind + woodStyle + role +
+ *    sizeCm rounded to 0.1 cm); ≤ 8 ms CPU on the main thread per rebuild at
+ *    quality "high" (vitest benchmark, node). Plants are not re-laid out unless
+ *    the plant layout inputs changed.
+ *  - New pure helper export: clampHardscapeXZ(h, tank, x, z) → {x, z}: clamps
+ *    so that the piece's rotated footprint ellipse (see 1.2.0) stays ≥ 1 cm
+ *    inside the glass on x and z. If the footprint is wider than the tank
+ *    interior on an axis, that axis is centred (0). FrontalTank uses it for
+ *    hardscape drags; web uses the same function in the editor reducer.
+ *  - 1.2.1 behaviour fixes (from 11-15 objections), now normative:
+ *    · Selection halo is a FRONT half-arc only (the back half would be hidden
+ *      behind foliage), drawn without depth test so it is never occluded.
+ *    · Drag threshold: a drag starts only after the pointer moved > 4 css px
+ *      from pointer-down. Below that it is a click: onSelect fires, NO onMove
+ *      events at all.
+ *    · phase "cancel" reports the ORIGINAL x/z exactly as given in props when
+ *      the drag started (not re-clamped).
+ *    · Plant drags clamp the plant centre 1 cm inside the glass; hardscape
+ *      drags use clampHardscapeXZ.
+ */
 
 /*
  * 1.2.0 (2026-11-15, additive — drag editing, P2 编辑器):
@@ -145,9 +184,14 @@ export interface HardscapeVisual {
   seed: number;
   /** Iwagumi role; shapes the stone (see 1.1.0 notes). Ignored for wood. */
   role?: StoneRole | undefined;
-  /** 0..0.6, default 0.15 — fraction of height buried in the bed */
+  /** 0..0.6, default 0.15 (wood: 0.05) — fraction of height buried in the bed */
   buriedFrac?: number | undefined;
+  /** driftwood silhouette (1.3.0), kind "wood" only; default "branchy" */
+  woodStyle?: WoodStyle | undefined;
 }
+
+/** Driftwood silhouettes (1.3.0). */
+export type WoodStyle = "branchy" | "root" | "log";
 
 /** Iwagumi stone roles: main, secondary, tertiary/support, scattered fill. */
 export type StoneRole = "oyaishi" | "fukuishi" | "soeishi" | "suteishi";
@@ -231,4 +275,6 @@ export interface BotanyRecordLike {
  *   export function footprintContains(h: HardscapeVisual, x: number, z: number, marginCm?: number): boolean
  *     — (1.2.0) true when (x, z) lies inside h's footprint ellipse grown by
  *       marginCm (default 0). Pure; used by web to reject plant drops on stones.
+ *   export function clampHardscapeXZ(h: HardscapeVisual, tank: { widthCm: number; depthCm: number }, x: number, z: number): { x: number; z: number }
+ *     — (1.3.0) see notes above. Pure.
  */
