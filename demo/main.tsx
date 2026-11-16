@@ -124,6 +124,68 @@ const DENSE_EXTRA: P[] = [
   { speciesId: "taxiphyllum-christmas", x: 10, z: 3, heightCm: 3, spreadCm: 8 },
 ];
 
+// ---- 1.3.0 driftwood: three wood styles side by side (?scene=woods) ----
+const WOOD_TANK = { widthCm: 90, depthCm: 45, heightCm: 45 };
+const WOODS_HS: HardscapeVisual[] = [
+  { id: "w-branchy", kind: "wood", woodStyle: "branchy", x: -29, z: -3, rotationY: 0.2, sizeCm: [24, 27, 14], seed: 31 },
+  { id: "w-root", kind: "wood", woodStyle: "root", x: 0, z: -4, rotationY: -0.15, sizeCm: [26, 30, 16], seed: 12 },
+  { id: "w-log", kind: "wood", woodStyle: "log", x: 29, z: 1, rotationY: 0.25, sizeCm: [26, 11, 12], seed: 5 },
+];
+const WOODS: P[] = (() => {
+  const out: P[] = [];
+  for (let xi = 0; xi < 9; xi++) {
+    for (const [ri, z] of [17, 12, 7].entries()) {
+      out.push({ speciesId: ri === 1 ? "micranthemum-monte-carlo" : "hemianthus-callitrichoides", x: -40 + xi * 10 + (ri % 2) * 5, z, heightCm: 2.2, spreadCm: 15 });
+    }
+  }
+  // low background
+  for (let i = 0; i < 12; i++) {
+    out.push({ speciesId: i % 3 === 0 ? "eleocharis-mini" : "eleocharis-acicularis", x: -41 + i * 7.4, z: -17 + (i % 2) * 2, heightCm: 6 + (i % 3) * 1.5, spreadCm: 9 });
+  }
+  // moss / epiphytes on the wood
+  out.push({ speciesId: "taxiphyllum-christmas", x: -29, z: -2, y: 3, heightCm: 3, spreadCm: 7 });
+  out.push({ speciesId: "taxiphyllum-christmas", x: -8, z: -2, y: 0, heightCm: 3, spreadCm: 8 });
+  out.push({ speciesId: "bucephalandra-kedagang", x: 4, z: -1, y: 0, heightCm: 5, spreadCm: 6 });
+  out.push({ speciesId: "taxiphyllum-christmas", x: 26, z: 2, y: 6, heightCm: 3, spreadCm: 8 });
+  out.push({ speciesId: "anubias-barteri-nana-petite", x: 33, z: 3, y: 0, heightCm: 5, spreadCm: 7 });
+  return out;
+})();
+
+// ---- 1.3.0 "Nature" scene: root tree on the left third, two stones, carpet + stems ----
+const NATURE_HS: HardscapeVisual[] = [
+  { id: "tree", kind: "wood", woodStyle: "root", x: -21, z: -5, rotationY: 0.1, sizeCm: [40, 34, 20], seed: 14 },
+  { id: "st1", kind: "stone", role: "fukuishi", x: 13, z: 3, rotationY: -0.5, sizeCm: [13, 11, 10], seed: 202 },
+  { id: "st2", kind: "stone", role: "suteishi", x: 27, z: 8, rotationY: 0.9, sizeCm: [8, 6, 7], seed: 505 },
+];
+const NATURE: P[] = (() => {
+  const out: P[] = [];
+  // HC + Monte Carlo carpet
+  for (let xi = 0; xi < 9; xi++) {
+    for (const [ri, z] of [17, 12.5, 8, 3.5].entries()) {
+      out.push({ speciesId: (xi + ri) % 3 === 0 ? "micranthemum-monte-carlo" : "hemianthus-callitrichoides", x: -40 + xi * 10 + (ri % 2) * 5, z, heightCm: 2.2, spreadCm: 15 });
+    }
+  }
+  // background stems, taller on the right (behind the empty side), lower behind the tree
+  const stems = ["rotala-rotundifolia", "rotala-hra", "pogostemon-erectus", "hygrophila-polysperma", "ludwigia-repens-rubin", "cabomba-caroliniana", "bacopa-caroliniana"];
+  for (let i = 0; i < 15; i++) {
+    const x = -40 + i * 5.7;
+    const hgt = 20 + 14 * Math.min(1, Math.max(0, (x + 25) / 55)) + ((i * 7) % 4);
+    out.push({ speciesId: stems[i % stems.length]!, x, z: -17 + ((i * 5) % 3) * 1.3, heightCm: hgt, spreadCm: 9 });
+  }
+  for (let i = 0; i < 6; i++) {
+    out.push({ speciesId: i % 2 ? "alternanthera-reineckii-mini" : "rotala-hra", x: 6 + i * 6, z: -9 - (i % 2) * 2, heightCm: 13 + (i % 3) * 3, spreadCm: 8 });
+  }
+  // midground + moss on the tree
+  out.push({ speciesId: "cryptocoryne-wendtii", x: 3, z: -3, heightCm: 10, spreadCm: 11 });
+  out.push({ speciesId: "eleocharis-mini", x: 21, z: 0, heightCm: 4, spreadCm: 8 });
+  out.push({ speciesId: "eleocharis-mini", x: 34, z: 3, heightCm: 4, spreadCm: 8 });
+  out.push({ speciesId: "taxiphyllum-christmas", x: -26, z: -3, y: 1.5, heightCm: 3, spreadCm: 9 });
+  out.push({ speciesId: "bucephalandra-kedagang", x: -14, z: -1, heightCm: 5, spreadCm: 7 });
+  out.push({ speciesId: "anubias-barteri-nana-petite", x: -31, z: 1, heightCm: 5, spreadCm: 8 });
+  out.push({ speciesId: "taxiphyllum-christmas", x: 9, z: 6, heightCm: 3, spreadCm: 8 });
+  return out;
+})();
+
 function App() {
   const params = new URLSearchParams(location.search);
   const quality = (params.get("q") as "high" | "low" | "auto" | null) ?? "auto";
@@ -144,11 +206,14 @@ function App() {
 
   const scene = params.get("scene") ?? "dense";
   const iwagumi = scene === "iwagumi";
+  const woods = scene === "woods";
+  const nature = scene === "nature";
+  const bigTank = woods || nature;
   const guides = (params.get("guides") as CompositionGuide | null) ?? (iwagumi ? "thirds" : "none");
   const plants = useMemo<PlantVisual[]>(() => {
     const g = Math.min(1, t / 45);
     const ease = 1 - Math.pow(1 - g, 1.6);
-    const src = iwagumi ? IWAGUMI : [...BASE, ...DENSE_EXTRA];
+    const src = iwagumi ? IWAGUMI : woods ? WOODS : nature ? NATURE : [...BASE, ...DENSE_EXTRA];
     return src.map((p, i) => ({
       id: `p${i}`,
       speciesId: p.speciesId,
@@ -163,7 +228,7 @@ function App() {
 
   // ---- editable mode (?edit=1, contract 1.2.0): controlled positions ----
   const edit = params.get("edit") === "1";
-  const stones = iwagumi ? IWAGUMI_STONES : HARDSCAPE;
+  const stones = iwagumi ? IWAGUMI_STONES : woods ? WOODS_HS : nature ? NATURE_HS : HARDSCAPE;
   const [hsState, setHsState] = useState<HardscapeVisual[]>(stones);
   const [posOverride, setPosOverride] = useState<Record<string, { x: number; z: number }>>({});
   const [selected, setSelected] = useState<EditTarget | null>(() => {
@@ -195,14 +260,14 @@ function App() {
   return (
     <>
       <FrontalTank
-        tank={{ widthCm: 60, depthCm: 36, heightCm: 36 }}
+        tank={bigTank ? WOOD_TANK : { widthCm: 60, depthCm: 36, heightCm: 36 }}
         species={species}
         plants={shownPlants}
         hardscape={edit ? hsState : stones}
         quality={quality}
         guides={guides}
         focalPoint={iwagumi ? { x: -10, y: 20 } : undefined}
-        bed={iwagumi ? { frontCm: 2, backCm: 9 } : undefined}
+        bed={iwagumi ? { frontCm: 2, backCm: 9 } : bigTank ? { frontCm: 2.5, backCm: 8 } : undefined}
         reducedMotion={params.get("rm") === "1"}
         data-testid="frontal-tank"
         editable={edit}

@@ -20,12 +20,8 @@ import {
   type LayerKey,
   type RenderQuality,
 } from "./layout.js";
-import {
-  makeBranchGeometry,
-  makeLayerGeometry,
-  makeStoneGeometry,
-  makeSubstrateGeometry,
-} from "./geometry.js";
+import { makeLayerGeometry, makeSubstrateGeometry } from "./geometry.js";
+import { HardscapeGeometryCache } from "./hardscapeCache.js";
 import { makeFoliageMaterial, makeSharedUniforms, makeSubstrateMaterial, type SharedUniforms } from "./materials.js";
 import { resolveQuality } from "./quality.js";
 import { FieldSync } from "./fieldSync.js";
@@ -262,12 +258,13 @@ const STONE_TONES = ["#a7a39c", "#9d9992", "#aeaaa3", "#99958f"];
 /** Max lift of the dragged item (contract 1.2.0: ≤ 0.5 cm). */
 const DRAG_LIFT_CM = 0.4;
 
-type StoneMats = { stones: THREE.MeshStandardMaterial[]; wood: THREE.MeshPhysicalMaterial };
+type StoneMats = { stones: THREE.MeshStandardMaterial[]; wood: THREE.MeshStandardMaterial };
 
 /**
- * One hardscape piece. Geometry depends only on shape inputs (size, seed,
- * role, kind), so dragging (x/z changes) never rebuilds it — only the
- * placement group moves.
+ * One hardscape piece. Geometry comes from the per-piece cache (1.3.0), keyed
+ * by shape inputs only (id, seed, kind, woodStyle, role, sizeCm @ 0.1 cm), so
+ * dragging (x/z) or rotating never rebuilds it and resizing one piece rebuilds
+ * only that piece — the placement group just moves / rotates.
  */
 function HardscapeItem({
   h,
@@ -277,6 +274,8 @@ function HardscapeItem({
   lifted,
   reducedMotion,
   roots,
+  cache,
+  quality,
 }: {
   h: HardscapeVisual;
   g: TankGeom;
@@ -285,19 +284,11 @@ function HardscapeItem({
   lifted: boolean;
   reducedMotion: boolean;
   roots: Map<string, THREE.Object3D> | null;
+  cache: HardscapeGeometryCache;
+  quality: RenderQuality;
 }) {
-  const [sw, shh, sd] = h.sizeCm;
-  const geo = useMemo(() => {
-    if (h.kind === "wood") return { parts: makeBranchGeometry([sw, shh, sd], h.seed), stone: null as THREE.BufferGeometry | null };
-    return { parts: [] as THREE.BufferGeometry[], stone: makeStoneGeometry([sw, shh, sd], h.seed, h.role) };
-  }, [h.kind, sw, shh, sd, h.seed, h.role]);
-  useEffect(
-    () => () => {
-      geo.stone?.dispose();
-      geo.parts.forEach((p) => p.dispose());
-    },
-    [geo],
-  );
+  // cache hit unless this piece's shape key changed (disposal handled by the cache)
+  const geo = cache.get(h, quality);
   const place = useMemo(() => stonePlacement(h, g.profile), [h, g]);
   const outer = useRef<THREE.Group>(null);
   const lift = useRef(0);
@@ -336,17 +327,12 @@ function HardscapeItem({
     // outer group: bed placement + lean (in tank space); inner: rotation about y
     <group ref={outer} position={[h.x, place.bottomY + lift.current, h.z]} rotation={[place.leanX, 0, place.leanZ]}>
       <group rotation={[0, h.rotationY, 0]}>
-        {geo.stone && (
-          <mesh
-            geometry={geo.stone}
-            material={mats.stones[Math.abs(h.seed) % mats.stones.length]}
-            castShadow={shadows}
-            receiveShadow={shadows}
-          />
-        )}
-        {geo.parts.map((p, i) => (
-          <mesh key={i} geometry={p} material={mats.wood} castShadow={shadows} receiveShadow={shadows} />
-        ))}
+        <mesh
+          geometry={geo}
+          material={h.kind === "wood" ? mats.wood : mats.stones[Math.abs(h.seed) % mats.stones.length]}
+          castShadow={shadows}
+          receiveShadow={shadows}
+        />
       </group>
     </group>
   );
@@ -372,11 +358,16 @@ function Hardscape({
       stones: STONE_TONES.map(
         (c) => new THREE.MeshStandardMaterial({ color: c, vertexColors: true, roughness: 0.62, metalness: 0, envMapIntensity: 0.9 }),
       ),
-      wood: new THREE.MeshPhysicalMaterial({ color: "#86644a", roughness: 0.55, clearcoat: 0.2, clearcoatRoughness: 0.5 }),
+      // warm stylized brown from vertex colours (#7A5A43 → #A88466), low gloss
+      wood: new THREE.MeshStandardMaterial({ color: "#ffffff", vertexColors: true, roughness: 0.68, metalness: 0, envMapIntensity: 0.85 }),
     }),
     [],
   );
   useEffect(() => () => [...mats.stones, mats.wood].forEach((m) => m.dispose()), [mats]);
+  const cache = useMemo(() => new HardscapeGeometryCache(), []);
+  useEffect(() => () => cache.dispose(), [cache]);
+  // drop geometry of removed pieces (after commit, so unmounted meshes are gone)
+  useEffect(() => cache.retain(items.map((h) => h.id)), [cache, items]);
   const shadows = quality === "high";
   return (
     <group>
@@ -390,6 +381,8 @@ function Hardscape({
           lifted={liftedId === h.id}
           reducedMotion={reducedMotion}
           roots={roots}
+          cache={cache}
+          quality={quality}
         />
       ))}
     </group>
