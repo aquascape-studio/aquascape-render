@@ -51,10 +51,25 @@ export function roleShape(role: StoneRole | undefined): RoleShape {
   return ROLE_SHAPES[role ?? "none"] ?? ROLE_SHAPES.none;
 }
 
-export function buriedFrac(h: Pick<HardscapeVisual, "buriedFrac" | "role">): number {
+/** Wood default burial (1.3.0): only the base touches the bed. */
+export const DEFAULT_BURIED_FRAC_WOOD = 0.05;
+
+export function buriedFrac(h: Pick<HardscapeVisual, "buriedFrac" | "role"> & { kind?: HardscapeVisual["kind"] | undefined }): number {
   const b = h.buriedFrac;
-  return typeof b === "number" && Number.isFinite(b) ? Math.min(0.6, Math.max(0, b)) : defaultBuriedFrac(h.role);
+  if (typeof b === "number" && Number.isFinite(b)) return Math.min(0.6, Math.max(0, b));
+  return h.kind === "wood" ? DEFAULT_BURIED_FRAC_WOOD : defaultBuriedFrac(h.role);
 }
+
+/**
+ * Fraction of the footprint ellipse that actually rests on the bed, per wood
+ * style: spider-wood stands on a small base, a root tree on its root flare,
+ * a log along its length.
+ */
+const WOOD_BASE_FOOTPRINT: Record<string, [number, number]> = {
+  branchy: [0.2, 0.3],
+  root: [0.6, 0.6],
+  log: [0.9, 0.5],
+};
 
 export interface StonePlacement {
   /** world y of the stone's lowest point (geometry spans 0..height) */
@@ -80,13 +95,14 @@ export function stonePlacement(h: HardscapeVisual, profile: SubstrateProfile): S
   const shape = h.kind === "wood" ? ROLE_SHAPES.none : roleShape(h.role);
   const [w, sh, d] = h.sizeCm;
   const height = Math.max(0.2, sh * shape.heightFrac);
-  const buried = h.kind === "wood" ? 0 : buriedFrac(h);
+  const buried = buriedFrac(h);
   const cos = Math.cos(h.rotationY);
   const sin = Math.sin(h.rotationY);
   const footprint: [number, number][] = [[h.x, h.z]];
   let bedMin = Infinity;
-  const rx = w * 0.45;
-  const rz = d * 0.45;
+  const wf = h.kind === "wood" ? WOOD_BASE_FOOTPRINT[h.woodStyle ?? "branchy"] ?? WOOD_BASE_FOOTPRINT.branchy! : [1, 1];
+  const rx = w * 0.45 * wf[0]!;
+  const rz = d * 0.45 * wf[1]!;
   for (let i = 0; i < 16; i++) {
     const a = (i / 16) * Math.PI * 2;
     const lx = Math.cos(a) * rx;
@@ -103,7 +119,10 @@ export function stonePlacement(h: HardscapeVisual, profile: SubstrateProfile): S
   const leanZ = side * shape.lean;
   // tilting raises one edge of the base: sink by that amount too
   const leanSink = Math.sin(Math.abs(leanZ)) * w * 0.5 + Math.sin(leanX) * d * 0.5;
-  const bottomY = Math.min(bedCenter - buried * height, bedMin - 0.04 * height - 0.15) - leanSink;
+  const bottomY =
+    h.kind === "wood"
+      ? Math.min(bedCenter, bedMin) - buried * height - 0.1
+      : Math.min(bedCenter - buried * height, bedMin - 0.04 * height - 0.15) - leanSink;
   return {
     bottomY,
     height,

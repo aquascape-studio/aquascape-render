@@ -1,6 +1,6 @@
 /**
  * Procedural geometry for FrontalTank: thick rounded leaves, moss puffs,
- * stems, sculptural pebbles, stylized branches, sloped substrate bed.
+ * stems, sculptural pebbles, sloped substrate bed (driftwood: wood.ts).
  * All built once and shared; per-frame updates only touch instance buffers.
  */
 import * as THREE from "three";
@@ -164,6 +164,52 @@ export function makeLayerGeometry(key: LeafShape | "stem"): THREE.BufferGeometry
 }
 
 /**
+ * Unit UV sphere with welded seam and single pole vertices, built directly
+ * (same topology as SphereGeometry + mergeVertices, ~10× faster — 1.3.0
+ * per-piece rebuild budget).
+ */
+export function makeWeldedSphere(segW: number, segH: number): THREE.BufferGeometry {
+  const nv = 2 + (segH - 1) * segW;
+  const pos = new Float32Array(nv * 3);
+  pos[1] = 1; // north pole = vertex 0
+  let k = 1;
+  for (let j = 1; j < segH; j++) {
+    const th = (j / segH) * Math.PI;
+    const st = Math.sin(th);
+    const ct = Math.cos(th);
+    for (let i = 0; i < segW; i++) {
+      const ph = (i / segW) * Math.PI * 2;
+      pos[k * 3] = -Math.cos(ph) * st;
+      pos[k * 3 + 1] = ct;
+      pos[k * 3 + 2] = Math.sin(ph) * st;
+      k++;
+    }
+  }
+  const south = k;
+  pos[south * 3 + 1] = -1;
+  const ring = (j: number, i: number) => 1 + (j - 1) * segW + (i % segW);
+  const idx = new (nv > 65535 ? Uint32Array : Uint16Array)((segW * 2 + (segH - 2) * segW * 2) * 3);
+  let n = 0;
+  for (let i = 0; i < segW; i++) {
+    idx[n++] = 0; idx[n++] = ring(1, i); idx[n++] = ring(1, i + 1);
+  }
+  for (let j = 1; j < segH - 1; j++) {
+    for (let i = 0; i < segW; i++) {
+      const a = ring(j, i), b = ring(j + 1, i), c = ring(j + 1, i + 1), d = ring(j, i + 1);
+      idx[n++] = a; idx[n++] = b; idx[n++] = d;
+      idx[n++] = b; idx[n++] = c; idx[n++] = d;
+    }
+  }
+  for (let i = 0; i < segW; i++) {
+    idx[n++] = ring(segH - 1, i); idx[n++] = south; idx[n++] = ring(segH - 1, i + 1);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  return g;
+}
+
+/**
  * Smooth sculptural stone (contract 1.1.0 roles). A convex "softened
  * polytope": the radius along each direction is a soft-min over a few random
  * facet planes and a sphere, so the stone has clear sculptural planes with
@@ -180,11 +226,7 @@ export function makeStoneGeometry(
 ): THREE.BufferGeometry {
   const shape = roleShape(role);
   const s = seed >>> 0;
-  const sphere = new THREE.SphereGeometry(1, segW, segH);
-  sphere.deleteAttribute("uv");
-  sphere.deleteAttribute("normal");
-  const g = mergeVertices(sphere, 1e-6);
-  sphere.dispose();
+  const g = makeWeldedSphere(segW, segH);
   const pos = g.getAttribute("position") as THREE.BufferAttribute;
 
   // facet planes: normals spread around the upper body, a few on the shoulders
@@ -254,37 +296,6 @@ export function makeStoneGeometry(
   g.computeVertexNormals();
   g.computeBoundingBox();
   return g;
-}
-
-/** Smooth stylized branch: a few tubes along gentle random curves. */
-export function makeBranchGeometry(size: [number, number, number], seed: number): THREE.BufferGeometry[] {
-  const parts: THREE.BufferGeometry[] = [];
-  const [w, h, d] = size;
-  const branches = 3;
-  for (let b = 0; b < branches; b++) {
-    const pts: THREE.Vector3[] = [];
-    const start = new THREE.Vector3(srand(seed, b, 1) * w * 0.15, 0, srand(seed, b, 2) * d * 0.2);
-    const dirX = (b === 0 ? 0.6 : b === 1 ? -0.5 : 0.2) + srand(seed, b, 3) * 0.3;
-    for (let i = 0; i < 6; i++) {
-      const t = i / 5;
-      pts.push(
-        new THREE.Vector3(
-          start.x + dirX * w * 0.5 * t + srand(seed, b * 10 + i, 4) * w * 0.04,
-          start.y + h * (b === 0 ? 0.6 : 0.95) * Math.pow(t, 0.8) * (b === 0 ? 0.7 : 1),
-          start.z + srand(seed, b * 10 + i, 5) * d * 0.15,
-        ),
-      );
-    }
-    const curve = new THREE.CatmullRomCurve3(pts);
-    const radius = Math.min(w, h) * (b === 0 ? 0.07 : 0.045);
-    const tube = new THREE.TubeGeometry(curve, 40, radius, 10, false);
-    parts.push(tube);
-    const cap = new THREE.SphereGeometry(radius, 10, 8);
-    const end = pts[pts.length - 1]!;
-    cap.translate(end.x, end.y, end.z);
-    parts.push(cap);
-  }
-  return parts;
 }
 
 /**

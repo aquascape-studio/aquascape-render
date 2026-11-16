@@ -12,6 +12,8 @@ import * as THREE from "three";
 import type { EditMoveEvent, EditTarget, HardscapeVisual, PlantVisual, SpeciesLook } from "../contract.js";
 import {
   DragSession,
+  clampHardscapeXZ,
+  clampToGlass,
   dragScale,
   hardscapePickShape,
   pickTarget,
@@ -35,6 +37,23 @@ export interface EditPropsSnapshot {
 function positionOf(s: EditPropsSnapshot, t: EditTarget): { x: number; z: number } | null {
   const item = t.kind === "plant" ? s.plants.find((p) => p.id === t.id) : s.hardscape.find((h) => h.id === t.id);
   return item ? { x: item.x, z: item.z } : null;
+}
+
+/**
+ * Clamp for one drag (1.3.0): plants keep their centre 1 cm inside the glass;
+ * hardscape keeps its rotated footprint ellipse 1 cm inside (clampHardscapeXZ).
+ * Shape inputs are captured at drag start (the caller only changes x/z).
+ */
+export function dragClamp(s: EditPropsSnapshot, t: EditTarget, g: { w: number; d: number }): (x: number, z: number) => { x: number; z: number } {
+  const tank = { widthCm: g.w, depthCm: g.d };
+  if (t.kind === "hardscape") {
+    const h = s.hardscape.find((v) => v.id === t.id);
+    if (h) {
+      const shape = { ...h };
+      return (x, z) => clampHardscapeXZ(shape, tank, x, z);
+    }
+  }
+  return (x, z) => clampToGlass({ w: g.w, d: g.d }, x, z);
 }
 
 /**
@@ -132,7 +151,15 @@ export function EditController({
       if (!target) return;
       const origin = positionOf(props.current, target);
       if (!origin) return;
-      session = new DragSession(target, origin, { x: px, y: py }, { w: g.w, d: g.d }, dragScale(g, visibleGlass(g, w, h)));
+      session = new DragSession(
+        target,
+        origin,
+        { x: px, y: py },
+        { w: g.w, d: g.d },
+        dragScale(g, visibleGlass(g, w, h)),
+        undefined,
+        dragClamp(props.current, target, g),
+      );
       pointerId = e.pointerId;
       try {
         el.setPointerCapture(e.pointerId);
@@ -280,11 +307,15 @@ void main() {
 }
 `;
 
+/** Width (in footprint-normalised z) over which the arc ends fade in. */
+export const HALO_FRONT_FADE = 0.12;
+
 // Ring drawn as a distance field in *screen* pixels (fwidth), so it stays a
 // thin ~2 px line plus a soft glow even though the bed is seen almost edge-on
-// from the front camera. The half behind the item fades out (the item itself
-// would hide it), leaving a soft arc on the bed in front of / under it.
+// from the front camera. Only the front half is drawn (1.2.1), without depth
+// test, so it is never occluded by the item or the foliage.
 const HALO_FRAG = /* glsl */ `
+#define HALO_FRONT_FADE ${HALO_FRONT_FADE.toFixed(3)}
 uniform vec3 uColor;
 uniform float uAlpha;
 uniform float uPxScale;
@@ -296,33 +327,35 @@ void main() {
   float px = abs(f) / max(fwidth(f), 1e-5) * uPxScale;
   float core = 1.0 - smoothstep(0.5, 1.5, px);
   float glow = 0.35 * exp(-px * px / 14.0);
-  float a = uAlpha * max(core, glow) * smoothstep(-0.35, 0.3, vFront);
+  // 1.2.1: FRONT half-arc only (the back half would sit behind foliage)
+  float a = uAlpha * max(core, glow) * smoothstep(0.0, HALO_FRONT_FADE, vFront);
   if (a < 0.004) discard;
   gl_FragColor = vec4(uColor, a);
   #include <colorspace_fragment>
 }
 `;
 
+/** Halo material: transparent, never depth-tested (1.2.1: never occluded). */
+export function makeHaloMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: HALO_VERT,
+    fragmentShader: HALO_FRAG,
+    uniforms: {
+      uColor: { value: new THREE.Color(HALO_COLOR) },
+      uAlpha: { value: HALO_ALPHA },
+      uPxScale: { value: 1 },
+    },
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false,
+  });
+}
+
 export function SelectionHalo({ g, spec }: { g: TankGeom; spec: HaloSpec | null }) {
   const invalidate = useThree((s) => s.invalidate);
   const dpr = useThree((s) => s.viewport.dpr);
-  const mat = useMemo(
-    () =>
-      new THREE.ShaderMaterial({
-        vertexShader: HALO_VERT,
-        fragmentShader: HALO_FRAG,
-        uniforms: {
-          uColor: { value: new THREE.Color(HALO_COLOR) },
-          uAlpha: { value: HALO_ALPHA },
-          uPxScale: { value: 1 },
-        },
-        transparent: true,
-        depthTest: false,
-        depthWrite: false,
-        toneMapped: false,
-      }),
-    [],
-  );
+  const mat = useMemo(() => makeHaloMaterial(), []);
   useEffect(() => () => mat.dispose(), [mat]);
   useEffect(() => {
     mat.uniforms.uPxScale!.value = 1 / Math.max(0.5, dpr || 1);
@@ -338,7 +371,10 @@ export function SelectionHalo({ g, spec }: { g: TankGeom; spec: HaloSpec | null 
   return <mesh geometry={geo} material={mat} renderOrder={8} frustumCulled={false} />;
 }
 
-/** Grid patch over the padded footprint, draped on the sloped bed. */
+/**
+ * Grid patch over the FRONT half of the padded footprint (world z ≥ centre),
+ * draped on the sloped bed. `aFront` = (z − centre z) / half-extent along z.
+ */
 export function makeHaloGeometry(g: TankGeom, s: HaloSpec): THREE.BufferGeometry {
   const n = HALO_SEG;
   const cos = Math.cos(s.rotationY);
@@ -366,9 +402,11 @@ export function makeHaloGeometry(g: TankGeom, s: HaloSpec): THREE.BufferGeometry
     }
   }
   const idx: number[] = [];
+  // front half only: drop every cell lying entirely behind the centre line
   for (let j = 0; j < n; j++) {
     for (let i = 0; i < n; i++) {
       const a = j * (n + 1) + i;
+      if (Math.max(front[a]!, front[a + 1]!, front[a + n + 1]!, front[a + n + 2]!) <= 0) continue;
       idx.push(a, a + n + 1, a + 1, a + 1, a + n + 1, a + n + 2);
     }
   }

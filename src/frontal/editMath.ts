@@ -59,6 +59,35 @@ export function clampToGlass(t: TankSize, x: number, z: number, inset = GLASS_IN
   return { x: Math.min(hx, Math.max(-hx, cx)), z: Math.min(hz, Math.max(-hz, cz)) };
 }
 
+/**
+ * (1.3.0) Clamp a hardscape position so the piece's rotated footprint ellipse
+ * (half-axes sizeCm[0]/2, sizeCm[2]/2, rotated by rotationY) stays ≥ 1 cm
+ * inside the glass on x and z. An axis on which the footprint is wider than
+ * the interior (minus the 1 cm margins) is centred at 0. Pure.
+ */
+export function clampHardscapeXZ(
+  h: HardscapeVisual,
+  tank: { widthCm: number; depthCm: number },
+  x: number,
+  z: number,
+): { x: number; z: number } {
+  const a = Math.abs(h.sizeCm[0]) / 2;
+  const c = Math.abs(h.sizeCm[2]) / 2;
+  const r = Number.isFinite(h.rotationY) ? h.rotationY : 0;
+  const cos = Math.cos(r);
+  const sin = Math.sin(r);
+  // half extents of the rotated ellipse along world x / z
+  const ex = Math.hypot(a * cos, c * sin);
+  const ez = Math.hypot(a * sin, c * cos);
+  const lim = (half: number, e: number, v: number): number => {
+    const m = half - GLASS_INSET_CM - e;
+    if (!(m > 0)) return 0;
+    const cv = Number.isNaN(v) ? 0 : v;
+    return Math.min(m, Math.max(-m, cv));
+  };
+  return { x: lim(tank.widthCm / 2, ex, x), z: lim(tank.depthCm / 2, ez, z) };
+}
+
 /** Fraction of the visible tank height that maps onto the full tank depth. */
 export const DEPTH_DRAG_FRACTION = 0.4;
 
@@ -92,9 +121,13 @@ export function dragPosition(
   origin: { x: number; z: number },
   dxPx: number,
   dyPx: number,
+  clamp: XZClamp = (x, z) => clampToGlass(t, x, z),
 ): { x: number; z: number } {
-  return clampToGlass(t, origin.x + dxPx * scale.cmPerPxX, origin.z + dyPx * scale.cmPerPxZ);
+  return clamp(origin.x + dxPx * scale.cmPerPxX, origin.z + dyPx * scale.cmPerPxZ);
 }
+
+/** Position clamp used by a drag (plants: clampToGlass; hardscape: clampHardscapeXZ). */
+export type XZClamp = (x: number, z: number) => { x: number; z: number };
 
 // ---------------------------------------------------------------------------
 // Picking
@@ -274,7 +307,7 @@ export function visibleGlass(g: TankGeom, width: number, height: number): Rect {
 // ---------------------------------------------------------------------------
 // Drag session
 
-/** Pointer travel (css px) before a press becomes a drag ("start"). */
+/** Pointer travel (css px) that must be EXCEEDED before a press becomes a drag ("start", 1.2.1). */
 export const DRAG_SLOP_PX = 4;
 
 export type DragState = "pressed" | "dragging" | "ended" | "cancelled";
@@ -294,12 +327,13 @@ export class DragSession {
     readonly tank: TankSize,
     readonly scale: DragScale,
     readonly slopPx = DRAG_SLOP_PX,
+    readonly clamp: XZClamp = (x, z) => clampToGlass(tank, x, z),
   ) {
-    this.last = clampToGlass(tank, origin.x, origin.z);
+    this.last = clamp(origin.x, origin.z);
   }
 
   private at(px: number, py: number): { x: number; z: number } {
-    return dragPosition(this.tank, this.scale, this.origin, px - this.startPx.x, py - this.startPx.y);
+    return dragPosition(this.tank, this.scale, this.origin, px - this.startPx.x, py - this.startPx.y, this.clamp);
   }
 
   /**
@@ -309,7 +343,8 @@ export class DragSession {
    */
   move(px: number, py: number): EditMoveEvent[] {
     if (this.state === "pressed") {
-      if (Math.hypot(px - this.startPx.x, py - this.startPx.y) < this.slopPx) return [];
+      // 1.2.1: a drag starts only once travel is strictly greater than the slop
+      if (!(Math.hypot(px - this.startPx.x, py - this.startPx.y) > this.slopPx)) return [];
       this.state = "dragging";
       const start: EditMoveEvent = { target: this.target, phase: "start", x: this.last.x, z: this.last.z };
       this.last = this.at(px, py);
