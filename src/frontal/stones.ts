@@ -84,6 +84,45 @@ export interface StonePlacement {
   leanZ: number;
   /** footprint sample points [x, z] used for the bed test */
   footprint: [number, number][];
+  /**
+   * World y of the piece's reference bed plane (1.4.0): bottomY − relBottom.
+   * hardscapeSurfaceY / anchors are heights above this plane, so an attached
+   * plant at frame height y is drawn at world y = bedRef + y.
+   */
+  bedRef: number;
+}
+
+/**
+ * Bed-independent part of a piece's placement (1.4.0): lean angles and the
+ * bottom offset below a FLAT bed at the piece. Pure in the HardscapeVisual
+ * (kind, sizeCm, role, woodStyle, buriedFrac, seed, sign of x).
+ */
+export interface PieceFrame {
+  height: number;
+  leanX: number;
+  leanZ: number;
+  /** bottom of the geometry relative to a flat bed through the piece (≤ 0) */
+  relBottom: number;
+  /** extra sink applied on top of burial for leaning stones */
+  leanSink: number;
+  buried: number;
+}
+
+export function pieceFrame(h: HardscapeVisual): PieceFrame {
+  const shape = h.kind === "wood" ? ROLE_SHAPES.none : roleShape(h.role);
+  const [w, sh, d] = h.sizeCm;
+  const height = Math.max(0.2, sh * shape.heightFrac);
+  const buried = buriedFrac(h);
+  if (h.kind === "wood") {
+    return { height, leanX: 0, leanZ: 0, relBottom: -buried * height - 0.1, leanSink: 0, buried };
+  }
+  const side = h.x === 0 ? (rand(h.seed >>> 0, 7, 3) < 0.5 ? -1 : 1) : Math.sign(h.x);
+  const leanX = shape.lean * 0.45;
+  const leanZ = side * shape.lean;
+  // tilting raises one edge of the base: sink by that amount too
+  const leanSink = Math.sin(Math.abs(leanZ)) * w * 0.5 + Math.sin(leanX) * d * 0.5;
+  const relBottom = Math.min(-buried * height, -0.04 * height - 0.15) - leanSink;
+  return { height, leanX, leanZ, relBottom, leanSink, buried };
 }
 
 /**
@@ -92,10 +131,9 @@ export interface StonePlacement {
  * footprint, so on a steep slope it never perches on the uphill side.
  */
 export function stonePlacement(h: HardscapeVisual, profile: SubstrateProfile): StonePlacement {
-  const shape = h.kind === "wood" ? ROLE_SHAPES.none : roleShape(h.role);
-  const [w, sh, d] = h.sizeCm;
-  const height = Math.max(0.2, sh * shape.heightFrac);
-  const buried = buriedFrac(h);
+  const fr = pieceFrame(h);
+  const [w, , d] = h.sizeCm;
+  const { height, buried } = fr;
   const cos = Math.cos(h.rotationY);
   const sin = Math.sin(h.rotationY);
   const footprint: [number, number][] = [[h.x, h.z]];
@@ -114,21 +152,17 @@ export function stonePlacement(h: HardscapeVisual, profile: SubstrateProfile): S
   }
   for (const [px, pz] of footprint) bedMin = Math.min(bedMin, substrateHeight(profile, px, pz));
   const bedCenter = substrateHeight(profile, h.x, h.z);
-  const side = h.x === 0 ? (rand(h.seed >>> 0, 7, 3) < 0.5 ? -1 : 1) : Math.sign(h.x);
-  const leanX = shape.lean * 0.45;
-  const leanZ = side * shape.lean;
-  // tilting raises one edge of the base: sink by that amount too
-  const leanSink = Math.sin(Math.abs(leanZ)) * w * 0.5 + Math.sin(leanX) * d * 0.5;
   const bottomY =
     h.kind === "wood"
       ? Math.min(bedCenter, bedMin) - buried * height - 0.1
-      : Math.min(bedCenter - buried * height, bedMin - 0.04 * height - 0.15) - leanSink;
+      : Math.min(bedCenter - buried * height, bedMin - 0.04 * height - 0.15) - fr.leanSink;
   return {
     bottomY,
     height,
     visibleHeight: bottomY + height - bedCenter,
-    leanX: h.kind === "wood" ? 0 : leanX,
-    leanZ: h.kind === "wood" ? 0 : leanZ,
+    leanX: fr.leanX,
+    leanZ: fr.leanZ,
     footprint,
+    bedRef: bottomY - fr.relBottom,
   };
 }

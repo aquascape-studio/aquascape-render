@@ -1,7 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FrontalTank, speciesLook } from "../src/index.js";
-import { footprintContains } from "../src/index.js";
+import { footprintContains, hardscapeAnchors } from "../src/index.js";
 import type {
   BotanyRecordLike,
   CompositionGuide,
@@ -21,6 +21,7 @@ const RECORDS: BotanyRecordLike[] = [
   { id: "vallisneria-spiralis", growthForm: "rosette", colorHex: "#68a84a", colorRange: ["green"], growth: { maxHeightCm: 50 } },
   { id: "anubias-barteri-nana-petite", growthForm: "epiphyte", colorHex: "#2d5a32", colorRange: ["dark-green"], visual: { leafLengthCm: 2.2, leafWidthCm: 1.4 } },
   { id: "bucephalandra-kedagang", growthForm: "epiphyte", colorHex: "#4a5c3a", colorRange: ["dark-green", "red-veined"], visual: { leafShape: "lanceolate", leafLengthCm: 2.6, leafWidthCm: 0.9 } },
+  { id: "vesicularia-dubyana", growthForm: "moss", colorHex: "#5c9a40", colorRange: ["green"] },
   { id: "microsorum-pteropus", growthForm: "epiphyte", colorHex: "#3f7a3a", colorRange: ["green"], visual: { leafShape: "lanceolate", leafLengthCm: 9, leafWidthCm: 2.2 } },
   { id: "rotala-rotundifolia", growthForm: "stem", colorHex: "#86b55e", colorRange: ["green", "pink-red-high-light"], visual: { leafLengthCm: 1.2, leafWidthCm: 0.45 } },
   { id: "ludwigia-repens-rubin", growthForm: "stem", colorHex: "#a04a38", colorRange: ["red"], visual: { leafShape: "ovate", leafLengthCm: 2.2, leafWidthCm: 1.2, tipColorHex: "#e8735a" } },
@@ -186,6 +187,51 @@ const NATURE: P[] = (() => {
   return out;
 })();
 
+// ---- 1.4.0 "Nature + epiphytes" (?scene=epiphytes): moss / Anubias / Buce tied onto hardscape ----
+const EPI_HS: HardscapeVisual[] = [
+  { id: "tree", kind: "wood", woodStyle: "root", x: -13, z: -4, rotationY: 0.12, sizeCm: [40, 33, 18], seed: 14, leanSide: "auto" },
+  { id: "st1", kind: "stone", role: "fukuishi", x: 17, z: 3, rotationY: -0.5, sizeCm: [14, 12, 11], seed: 202 },
+  { id: "st2", kind: "stone", role: "soeishi", x: 30, z: 9, rotationY: 0.9, sizeCm: [9, 7, 8], seed: 505 },
+  // a low bog-wood ledge in front of the tree for the Anubias
+  { id: "log", kind: "wood", woodStyle: "log", x: 0, z: 7, rotationY: -0.15, sizeCm: [17, 6.5, 8], seed: 5 },
+];
+const EPIPHYTES: P[] = (() => {
+  const out: P[] = [];
+  // HC carpet across the front
+  for (let xi = 0; xi < 10; xi++) {
+    for (const [ri, z] of [18, 13.5, 9, 4.5].entries()) {
+      out.push({ speciesId: "hemianthus-callitrichoides", x: -41 + xi * 9.2 + (ri % 2) * 4.5, z, heightCm: 2, spreadCm: 14 });
+    }
+  }
+  // background stems, taller on the right, lower behind the tree
+  const stems = ["rotala-rotundifolia", "rotala-hra", "pogostemon-erectus", "hygrophila-polysperma", "ludwigia-repens-rubin", "cabomba-caroliniana", "bacopa-caroliniana"];
+  for (let i = 0; i < 15; i++) {
+    const x = -40 + i * 5.7;
+    const hgt = 17 + 15 * Math.min(1, Math.max(0, (x + 20) / 55)) + ((i * 7) % 4);
+    out.push({ speciesId: stems[i % stems.length]!, x, z: -17 + ((i * 5) % 3) * 1.3, heightCm: hgt, spreadCm: 9 });
+  }
+  for (let i = 0; i < 5; i++) {
+    out.push({ speciesId: i % 2 ? "alternanthera-reineckii-mini" : "rotala-hra", x: 10 + i * 6.5, z: -9 - (i % 2) * 2, heightCm: 12 + (i % 3) * 3, spreadCm: 8 });
+  }
+  out.push({ speciesId: "eleocharis-mini", x: 9, z: 1, heightCm: 4, spreadCm: 8 });
+  out.push({ speciesId: "cryptocoryne-wendtii", x: 11, z: -6, heightCm: 9, spreadCm: 10 });
+  // epiphytes on anchors (contract 1.4.0)
+  const tree = hardscapeAnchors(EPI_HS[0]!, 10);
+  // moss on the front-most high branch anchor and on a second branch far from it;
+  // Anubias on the log's top
+  const high = tree.filter((a) => a.y > 15);
+  const mossA = high[0] ?? tree[0]!;
+  const mossB = high.find((a) => Math.hypot(a.x - mossA.x, a.z - mossA.z) > 12) ?? tree[1]!;
+  const anu = hardscapeAnchors(EPI_HS[3]!, 3)[0]!;
+  const stone = hardscapeAnchors(EPI_HS[1]!, 4);
+  const buce = stone[0]!;
+  out.push({ speciesId: "taxiphyllum-christmas", x: mossA.x, z: mossA.z, y: mossA.y, heightCm: 3, spreadCm: 9 });
+  out.push({ speciesId: "vesicularia-dubyana", x: mossB.x, z: mossB.z, y: mossB.y, heightCm: 3, spreadCm: 8.5 });
+  out.push({ speciesId: "anubias-barteri-nana-petite", x: anu.x, z: anu.z, y: anu.y, heightCm: 6, spreadCm: 10 });
+  out.push({ speciesId: "bucephalandra-kedagang", x: buce.x, z: buce.z, y: buce.y, heightCm: 6, spreadCm: 9 });
+  return out;
+})();
+
 function App() {
   const params = new URLSearchParams(location.search);
   const quality = (params.get("q") as "high" | "low" | "auto" | null) ?? "auto";
@@ -208,12 +254,13 @@ function App() {
   const iwagumi = scene === "iwagumi";
   const woods = scene === "woods";
   const nature = scene === "nature";
-  const bigTank = woods || nature;
+  const epi = scene === "epiphytes";
+  const bigTank = woods || nature || epi;
   const guides = (params.get("guides") as CompositionGuide | null) ?? (iwagumi ? "thirds" : "none");
   const plants = useMemo<PlantVisual[]>(() => {
     const g = Math.min(1, t / 45);
     const ease = 1 - Math.pow(1 - g, 1.6);
-    const src = iwagumi ? IWAGUMI : woods ? WOODS : nature ? NATURE : [...BASE, ...DENSE_EXTRA];
+    const src = iwagumi ? IWAGUMI : woods ? WOODS : nature ? NATURE : epi ? EPIPHYTES : [...BASE, ...DENSE_EXTRA];
     return src.map((p, i) => ({
       id: `p${i}`,
       speciesId: p.speciesId,
@@ -228,7 +275,7 @@ function App() {
 
   // ---- editable mode (?edit=1, contract 1.2.0): controlled positions ----
   const edit = params.get("edit") === "1";
-  const stones = iwagumi ? IWAGUMI_STONES : woods ? WOODS_HS : nature ? NATURE_HS : HARDSCAPE;
+  const stones = iwagumi ? IWAGUMI_STONES : woods ? WOODS_HS : nature ? NATURE_HS : epi ? EPI_HS : HARDSCAPE;
   const [hsState, setHsState] = useState<HardscapeVisual[]>(stones);
   const [posOverride, setPosOverride] = useState<Record<string, { x: number; z: number }>>({});
   const [selected, setSelected] = useState<EditTarget | null>(() => {

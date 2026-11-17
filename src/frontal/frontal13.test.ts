@@ -37,8 +37,8 @@ function lum(c: THREE.BufferAttribute, i: number): number {
 }
 
 describe("contract version", () => {
-  it("is 1.3.0", () => {
-    expect(RENDER_CONTRACT_VERSION).toBe("1.3.0");
+  it("is 1.3.0 or a later additive version", () => {
+    expect(["1.3.0", "1.4.0"]).toContain(RENDER_CONTRACT_VERSION);
   });
 });
 

@@ -14,6 +14,7 @@ import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { CompositionGuide, EditTarget, FrontalTankProps, HardscapeVisual, PlantVisual, SpeciesLook } from "../contract.js";
 import { EditController, SelectionHalo, haloSpec, type EditPropsSnapshot } from "./edit.js";
+import { footprintContains } from "./editMath.js";
 import {
   LAYER_KEYS,
   substrateHeight,
@@ -26,6 +27,7 @@ import { makeFoliageMaterial, makeSharedUniforms, makeSubstrateMaterial, type Sh
 import { resolveQuality } from "./quality.js";
 import { FieldSync } from "./fieldSync.js";
 import { stonePlacement } from "./stones.js";
+import { makeSurfaceField, pieceSurface, surfaceKey, type PlacedSurface, type SurfaceField } from "./surface.js";
 import { fitCamera, focalToScreen, frontGlassRect, guideLines, tankGeom, type TankGeom } from "./tank.js";
 
 const BG = "#ffffff";
@@ -420,12 +422,44 @@ interface FieldProps {
   uniforms: SharedUniforms;
   /** id of the plant being dragged (lifted DRAG_LIFT_CM), 1.2.0 */
   liftedId?: string | null | undefined;
+  /** hardscape, for epiphytes / moss attached to it (1.4.0) */
+  hardscape: HardscapeVisual[];
+}
+
+/** Epiphyte / moss drawn on hardscape (1.4.0): y > 0. */
+function isAttached(p: PlantVisual, look: SpeciesLook | undefined): boolean {
+  return !!look && (p.y || 0) > 0 && (look.growthForm === "epiphyte" || look.growthForm === "moss");
+}
+
+interface HardscapeSurfaces {
+  field: SurfaceField;
+  pieces: (PlacedSurface & { h: HardscapeVisual })[];
+  key: string;
+}
+
+/**
+ * World bed reference for an attached plant: the bedRef of the piece whose
+ * top surface at (x, z) is closest to the plant's y (falls back to a piece
+ * whose footprint contains it, then to the substrate).
+ */
+function attachedBase(s: HardscapeSurfaces, p: PlantVisual): number | null {
+  let best: number | null = null;
+  let bestD = Infinity;
+  for (const pc of s.pieces) {
+    const y = pc.surf.top(p.x, p.z);
+    if (y === null) continue;
+    const d = Math.abs(y - p.y);
+    if (d < bestD) { bestD = d; best = pc.bedRef; }
+  }
+  if (best !== null) return best;
+  for (const pc of s.pieces) if (footprintContains(pc.h, p.x, p.z, 1)) return pc.bedRef;
+  return null;
 }
 
 /** Leaf instances stay this far inside the glass (also covers GPU sway). */
 const GLASS_LEAF_MARGIN = 0.7;
 
-function PlantField({ plants, species, quality, g, uniforms, liftedId = null }: FieldProps) {
+function PlantField({ plants, species, quality, g, uniforms, liftedId = null, hardscape }: FieldProps) {
   const group = useRef<THREE.Group>(null);
   const invalidate = useThree((s) => s.invalidate);
 
@@ -458,17 +492,37 @@ function PlantField({ plants, species, quality, g, uniforms, liftedId = null }: 
 
   const warned = useRef(new Set<string>());
 
+  // hardscape surface index, built lazily (only when an attached plant exists)
+  const surfaces = useMemo(() => {
+    let built: HardscapeSurfaces | null = null;
+    return (): HardscapeSurfaces => {
+      if (built) return built;
+      const pieces = hardscape.map((h) => ({ h, surf: pieceSurface(h, quality), bedRef: stonePlacement(h, g.profile).bedRef }));
+      built = {
+        pieces,
+        field: makeSurfaceField(pieces),
+        key: pieces.map((pc) => `${surfaceKey(pc.h, quality)}@${pc.bedRef}`).join(";"),
+      };
+      return built;
+    };
+  }, [hardscape, quality, g]);
+
   useLayoutEffect(() => {
     const grp = group.current;
     if (!grp) return;
     const { sync } = res;
     const bounds = { halfW: g.w / 2 - GLASS_LEAF_MARGIN, halfD: g.d / 2 - GLASS_LEAF_MARGIN };
-    sync.update(plants, species, (p) => ({
-      quality,
-      baseY: substrateHeight(g.profile, p.x, p.z) + (p.id === liftedId ? DRAG_LIFT_CM : 0),
-      waterY: g.waterY,
-      bounds,
-    }));
+    const lift = (p: PlantVisual) => (p.id === liftedId ? DRAG_LIFT_CM : 0);
+    sync.update(plants, species, (p, look) => {
+      if (hardscape.length > 0 && isAttached(p, look)) {
+        const s = surfaces();
+        const ref = attachedBase(s, p);
+        if (ref !== null) {
+          return { quality, baseY: ref + lift(p), waterY: g.waterY, bounds, surface: s.field, surfaceKey: s.key };
+        }
+      }
+      return { quality, baseY: substrateHeight(g.profile, p.x, p.z) + lift(p), waterY: g.waterY, bounds };
+    });
     for (const p of plants) {
       if (!species[p.speciesId] && !warned.current.has(p.speciesId)) {
         warned.current.add(p.speciesId);
@@ -518,7 +572,7 @@ function PlantField({ plants, species, quality, g, uniforms, liftedId = null }: 
       mesh.instanceColor!.needsUpdate = true;
     });
     invalidate();
-  }, [plants, species, quality, g, res, invalidate, liftedId]);
+  }, [plants, species, quality, g, res, invalidate, liftedId, hardscape, surfaces]);
 
   return <group ref={group} />;
 }
@@ -685,6 +739,7 @@ export function FrontalTank(props: FrontalTankProps): JSX.Element {
           g={g}
           uniforms={uniforms}
           liftedId={drag?.kind === "plant" && !reducedMotion ? drag.id : null}
+          hardscape={hs}
         />
         {editable && <SelectionHalo g={g} spec={halo} />}
         {editable && <EditController g={g} props={editRef} roots={roots} onDragChange={setDragging} />}
