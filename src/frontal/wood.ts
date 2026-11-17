@@ -131,16 +131,22 @@ function fork(parent: Sampled, t0: number, end: V3, lead: number, wig: V3 = [0, 
 
 interface Skeleton {
   limbs: Limb[];
+  /** preferred epiphyte attachment points on limb centrelines (1.4.0), with weight 0..1 */
+  hints: { p: V3; w: number }[];
+  /** root style: trunk base and top (lean measurement) */
+  trunk?: [V3, V3];
 }
 
 /** spider-wood: short buried base → 4–7 slender branches fanning up/out + twigs. */
 function branchySkeleton(w: number, h: number, d: number, seed: number): Skeleton {
   const limbs: Limb[] = [];
+  const hints: { p: V3; w: number }[] = [];
   const rb = clamp(Math.min(w * 0.7, h) * 0.06, 0.25, 4);
   const hub: V3 = [srand(seed, 0, 1) * w * 0.04, h * 0.16, srand(seed, 0, 2) * d * 0.06];
   const basePts: V3[] = [[hub[0] * 0.3, -h * 0.03, hub[2] * 0.3], [hub[0] * 0.6, h * 0.07, hub[2] * 0.6], hub];
   limbs.push({ kind: "base", pts: basePts, radius: taper(rb * 1.6, rb * 1.15, 0.1, 0.03, seed % 7), s0: 0, s1: 0.18 });
   const base = sampleCurve(basePts, 8);
+  hints.push({ p: hub, w: 0.7 });
   // short roots gripping the bed
   const nRoots = 2 + Math.floor(rand(seed, 0, 3) * 2);
   for (let i = 0; i < nRoots; i++) {
@@ -167,11 +173,13 @@ function branchySkeleton(w: number, h: number, d: number, seed: number): Skeleto
     pts.splice(2, 0, add(mix3(pts[1]!, end, 0.3), [0, L * 0.06, 0]));
     const rOf = childTaper(rb * 1.2, rb * (0.95 - 0.15 * Math.abs(u)), rb * 0.2, 0.25, 0.06, i * 1.7, 0.75);
     limbs.push({ kind: "branch", pts, radius: rOf, s0: 0.18, s1: 1 });
+    const br = sampleCurve(pts, 16);
+    hints.push({ p: at(br, 0.5).p, w: 0.6 });
     // secondary twig(s)
     if (rand(seed, i, 14) < 0.65) {
-      const br = sampleCurve(pts, 16);
       const t0 = 0.42 + 0.25 * rand(seed, i, 15);
       const a = at(br, t0);
+      hints.push({ p: a.p, w: 1 });
       const side = u >= 0 ? 1 : -1;
       const dir = norm([a.t[0] + side * 0.9, a.t[1] + 0.5, a.t[2] + srand(seed, i, 16) * 0.6]);
       const tl = br.length * (0.22 + 0.12 * rand(seed, i, 17));
@@ -185,34 +193,49 @@ function branchySkeleton(w: number, h: number, d: number, seed: number): Skeleto
       });
     }
   }
-  return { limbs };
+  return { limbs, hints };
 }
 
-/** Nature-style tree: leaning trunk, flared roots, 2–4 branches to the far side. */
-function rootSkeleton(w: number, h: number, d: number, seed: number): Skeleton {
+/**
+ * Nature-style tree: one trunk leaning `lean` rad from vertical towards `side`
+ * (−1 left / +1 right), flared roots, 2–4 branches reaching to the far side.
+ * `k` compensates the final bounding-box fit (fitted lean = atan(run·sx /
+ * (rise·sy)), k ≈ sy / sx). When the box is too narrow for the trunk's
+ * horizontal run at that lean, the trunk is shortened (its top drops) instead
+ * of the lean dropping below 30° (1.4.0); the branches then rise steeply to
+ * fill the height.
+ */
+function rootSkeleton(w: number, h: number, d: number, seed: number, side: number, lean: number, k: number): Skeleton {
   const limbs: Limb[] = [];
-  const s = rand(seed, 1, 1) < 0.5 ? -1 : 1; // lean direction
-  const lean = ((30 + 15 * rand(seed, 1, 2)) * Math.PI) / 180;
+  const hints: { p: V3; w: number }[] = [];
+  const s = side;
   const rt = clamp(Math.min(w * 0.6, h) * 0.13, 0.5, 8);
   const B: V3 = [-s * w * 0.24, -h * 0.02, srand(seed, 1, 3) * d * 0.1];
-  const topY = h * (0.62 + 0.08 * rand(seed, 1, 4));
-  const T: V3 = [clamp(B[0] + s * Math.tan(lean) * topY, -w * 0.32, w * 0.32), topY, B[2] + srand(seed, 1, 5) * d * 0.15];
+  const maxRun = w * 0.56;
+  let topY = h * (0.62 + 0.08 * rand(seed, 1, 4));
+  let run = Math.tan(lean) * (topY - B[1]) * k;
+  if (run > maxRun) {
+    run = maxRun;
+    topY = B[1] + maxRun / (Math.tan(lean) * k);
+  }
+  const T: V3 = [B[0] + s * run, topY, B[2] + srand(seed, 1, 5) * d * 0.15];
   const dir = sub(T, B);
   const bow = srand(seed, 1, 6) * d * 0.12;
   const trunkPts: V3[] = [
     B,
-    add(B, add(mul(dir, 0.3), [-s * w * 0.05, 0, bow])),
-    add(B, add(mul(dir, 0.68), [s * w * 0.045, 0, -bow * 0.5])),
+    add(B, add(mul(dir, 0.3), [-s * run * 0.09, 0, bow])),
+    add(B, add(mul(dir, 0.68), [s * run * 0.08, 0, -bow * 0.5])),
     T,
   ];
   const trunkBody = taper(rt, rt * 0.42, 0.45, 0.06, seed % 5, 0.7);
   // past the last fork the trunk narrows quickly into a soft rounded tip (no cut stub)
   const trunkR = (t: number) => {
-    const k = clamp((t - 0.84) / 0.16, 0, 1);
-    return trunkBody(t) * (1 - 0.55 * k * k * (3 - 2 * k));
+    const kk = clamp((t - 0.84) / 0.16, 0, 1);
+    return trunkBody(t) * (1 - 0.55 * kk * kk * (3 - 2 * kk));
   };
   limbs.push({ kind: "trunk", pts: trunkPts, radius: trunkR, s0: 0, s1: 0.55 });
   const trunk = sampleCurve(trunkPts, 24);
+  hints.push({ p: at(trunk, 0.72).p, w: 0.85 }, { p: at(trunk, 0.88).p, w: 0.85 });
   // flared roots into the bed, mostly behind the lean
   const nRoots = 3 + Math.floor(rand(seed, 1, 7) * 3); // 3..5
   for (let i = 0; i < nRoots; i++) {
@@ -234,6 +257,7 @@ function rootSkeleton(w: number, h: number, d: number, seed: number): Skeleton {
   for (let i = 0; i < nb; i++) {
     const t0 = nb === 1 ? 0.8 : 0.48 + (0.38 * i) / (nb - 1);
     const a = at(trunk, Math.min(0.98, t0));
+    hints.push({ p: a.p, w: 1 });
     const reach = 0.3 + 0.2 * rand(seed, i, 12);
     const end: V3 = [
       s * w * (i === nb - 1 ? 0.5 : reach + 0.05),
@@ -246,10 +270,12 @@ function rootSkeleton(w: number, h: number, d: number, seed: number): Skeleton {
     const r0 = trunkR(Math.min(0.98, t0)) * (i === nb - 1 ? 0.9 : 0.68);
     const rOf = childTaper(trunkR(t0), r0, rt * 0.07, 0.25, 0.06, i * 1.3, 0.75);
     limbs.push({ kind: "branch", pts, radius: rOf, s0: lerp(0, 0.55, t0), s1: 1 });
+    const br = sampleCurve(pts, 16);
+    hints.push({ p: at(br, 0.4).p, w: 0.6 });
     if (rand(seed, i, 17) < 0.7) {
-      const br = sampleCurve(pts, 16);
       const tt = 0.45 + 0.25 * rand(seed, i, 18);
       const b = at(br, tt);
+      hints.push({ p: b.p, w: 0.9 });
       const tdir = norm([b.t[0] * 0.6, b.t[1] + 0.8, b.t[2] + srand(seed, i, 19) * 0.5]);
       const tl = br.length * (0.25 + 0.12 * rand(seed, i, 20));
       limbs.push({
@@ -265,16 +291,18 @@ function rootSkeleton(w: number, h: number, d: number, seed: number): Skeleton {
   {
     const t0 = 0.62 + 0.1 * rand(seed, 2, 1);
     const a = at(trunk, t0);
-    const end: V3 = [a.p[0] - s * w * (0.12 + 0.06 * rand(seed, 2, 2)), h * (0.86 + 0.1 * rand(seed, 2, 3)), a.p[2] + srand(seed, 2, 4) * d * 0.2];
+    const end: V3 = [a.p[0] - s * w * (0.12 + 0.06 * rand(seed, 2, 2)), Math.max(a.p[1] + h * 0.12, h * (0.86 + 0.1 * rand(seed, 2, 3))), a.p[2] + srand(seed, 2, 4) * d * 0.2];
     const L = len(sub(end, a.p));
     limbs.push({ kind: "twig", pts: fork(trunk, t0, end, L * 0.2), radius: childTaper(trunkR(t0), trunkR(t0) * 0.55, rt * 0.07, 0.25, 0.04, 3), s0: 0.4, s1: 1 });
+    hints.push({ p: a.p, w: 0.9 });
   }
-  return { limbs };
+  return { limbs, hints, trunk: [B, T] };
 }
 
 /** Bog-wood log: low horizontal chunk with 1–2 short stubs. */
 function logSkeleton(w: number, h: number, d: number, seed: number): Skeleton {
   const limbs: Limb[] = [];
+  const hints: { p: V3; w: number }[] = [];
   const rl = clamp(Math.min(h * 0.3, d * 0.32, w * 0.12), 0.4, 12);
   const n = 5;
   const pts: V3[] = [];
@@ -291,6 +319,7 @@ function logSkeleton(w: number, h: number, d: number, seed: number): Skeleton {
   const logR = (t: number) => rl * lerp(1, asym, t) * (1 + 0.14 * Math.sin(Math.PI * t)) * (1 + 0.07 * Math.sin(t * 7 + ph));
   limbs.push({ kind: "log", pts, radius: logR, s0: 0.1, s1: 0.45 });
   const log = sampleCurve(pts, 24);
+  for (const t of [0.22, 0.38, 0.5, 0.62, 0.78]) hints.push({ p: at(log, t).p, w: 1 });
   const ns = 1 + (rand(seed, 0, 6) < 0.55 ? 1 : 0);
   for (let i = 0; i < ns; i++) {
     const t0 = ns === 1 ? 0.35 + 0.3 * rand(seed, i, 7) : i === 0 ? 0.22 + 0.15 * rand(seed, i, 7) : 0.6 + 0.18 * rand(seed, i, 7);
@@ -299,6 +328,7 @@ function logSkeleton(w: number, h: number, d: number, seed: number): Skeleton {
     const top = h * (i === 0 ? 1 : 0.78 + 0.15 * rand(seed, i, 9));
     const end: V3 = [a.p[0] + side * (top - a.p[1]) * (0.5 + 0.4 * rand(seed, i, 10)), top, a.p[2] + srand(seed, i, 11) * d * 0.15];
     const start: V3 = add(a.p, [0, logR(t0) * 0.35, 0]);
+    hints.push({ p: add(a.p, [0, logR(t0) * 0.6, 0]), w: 0.8 });
     const p1 = add(start, [side * logR(t0) * 0.2, logR(t0) * 0.7, 0]);
     limbs.push({
       kind: "stub",
@@ -308,18 +338,83 @@ function logSkeleton(w: number, h: number, d: number, seed: number): Skeleton {
       s1: 1,
     });
   }
-  return { limbs };
+  return { limbs, hints };
 }
 
-function skeleton(style: WoodStyle, w: number, h: number, d: number, seed: number): Skeleton {
-  switch (style) {
-    case "root":
-      return rootSkeleton(w, h, d, seed);
-    case "log":
-      return logSkeleton(w, h, d, seed);
-    default:
-      return branchySkeleton(w, h, d, seed);
+/** Minimum fitted tube radius at twig tips (1.4.0): rounded, never matchsticks. */
+export const MIN_TUBE_RADIUS: Record<RenderQuality, number> = { high: 0.35, low: 0.45 };
+
+/** Root lean target range (1.4.0: 30–45°, kept a little inside for the fit). */
+const ROOT_LEAN_MIN = 31.5 * (Math.PI / 180);
+const ROOT_LEAN_MAX = 43.5 * (Math.PI / 180);
+
+/** Seed-derived lean side, used only when no side is given (direct geometry calls). */
+export function seedLeanSide(seed: number): -1 | 1 {
+  return rand(seed >>> 0, 1, 1) < 0.5 ? -1 : 1;
+}
+
+interface Extents {
+  minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number;
+}
+
+/** Predicted swept extents of a skeleton (centreline samples ± radius). */
+function skeletonExtents(sk: Skeleton, minR: number): Extents {
+  const e: Extents = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity };
+  for (const limb of sk.limbs) {
+    // control points are on the centripetal Catmull-Rom curve (it barely
+    // overshoots); radius at the matching chord-length fraction
+    const pts = limb.pts;
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) total += len(sub(pts[i]!, pts[i - 1]!));
+    let acc = 0;
+    for (let i = 0; i < pts.length; i++) {
+      if (i > 0) acc += len(sub(pts[i]!, pts[i - 1]!));
+      const p = pts[i]!;
+      const r = Math.max(minR, limb.radius(total > 0 ? acc / total : 0));
+      if (p[0] - r < e.minX) e.minX = p[0] - r;
+      if (p[0] + r > e.maxX) e.maxX = p[0] + r;
+      if (p[1] - r < e.minY) e.minY = p[1] - r;
+      if (p[1] + r > e.maxY) e.maxY = p[1] + r;
+      if (p[2] - r < e.minZ) e.minZ = p[2] - r;
+      if (p[2] + r > e.maxZ) e.maxZ = p[2] + r;
+    }
   }
+  return e;
+}
+
+interface Built {
+  sk: Skeleton;
+  /** skeleton-space minimum tube radius so the FITTED radius ≥ MIN_TUBE_RADIUS */
+  minR: number;
+}
+
+function skeleton(style: WoodStyle, w: number, h: number, d: number, seed: number, side: number, quality: RenderQuality): Built {
+  const target = MIN_TUBE_RADIUS[quality];
+  const minRFor = (sk: Skeleton) => {
+    const e = skeletonExtents(sk, target);
+    const sMin = Math.min(w / (e.maxX - e.minX), h / (e.maxY - e.minY), d / (e.maxZ - e.minZ));
+    return (target / Math.min(1, sMin)) * 1.1;
+  };
+  if (style === "root") {
+    const lean = clamp((30 + 15 * rand(seed, 1, 2)) * (Math.PI / 180), ROOT_LEAN_MIN, ROOT_LEAN_MAX);
+    let k = 1;
+    let sk = rootSkeleton(w, h, d, seed, side, lean, k);
+    let minR = minRFor(sk);
+    for (let it = 0; it < 4; it++) {
+      const e = skeletonExtents(sk, minR);
+      const sx = w / (e.maxX - e.minX);
+      const sy = h / (e.maxY - e.minY);
+      const [B, T] = sk.trunk!;
+      const fitted = Math.atan2(Math.abs(T[0] - B[0]) * sx, (T[1] - B[1]) * sy);
+      if (Math.abs(fitted - lean) < 0.004) break;
+      k *= Math.tan(lean) / Math.tan(fitted);
+      sk = rootSkeleton(w, h, d, seed, side, lean, k);
+      minR = minRFor(sk);
+    }
+    return { sk, minR };
+  }
+  const sk = style === "log" ? logSkeleton(w, h, d, seed) : branchySkeleton(w, h, d, seed);
+  return { sk, minR: minRFor(sk) };
 }
 
 // ---------------------------------------------------------------------------
@@ -351,8 +446,15 @@ class Builder {
     return this.pos.length / 3 - 1;
   }
 
-  sweep(limb: Limb, det: Detail): void {
+  /** first triangle index of each limb (each limb is a closed tube) */
+  limbTri: number[] = [];
+  /** smallest ring radius actually swept (skeleton units) */
+  minRing = Infinity;
+
+  sweep(limb0: Limb, det: Detail, minR: number): void {
     const M = det.ring;
+    const limb: Limb = { ...limb0, radius: (t) => Math.max(minR, limb0.radius(t)) };
+    this.limbTri.push(this.idx.length / 3);
     const approxLen = limb.pts.reduce((a, p, i) => (i ? a + len(sub(p, limb.pts[i - 1]!)) : 0), 0);
     const rMean = Math.max(0.05, (limb.radius(0) + limb.radius(0.5) + limb.radius(1)) / 3);
     const n = clamp(Math.round((approxLen / rMean) * det.density), 6, det.maxSeg);
@@ -409,6 +511,7 @@ class Builder {
     for (let i = 0; i <= n; i++) {
       const u = c.u[i]!;
       const r = limb.radius(u);
+      if (r < this.minRing) this.minRing = r;
       const drds = (limb.radius(Math.min(1, u + dt * 0.5)) - limb.radius(Math.max(0, u - dt * 0.5))) / (dt * L);
       rings.push(ring(i, c.p[i]!, r, c.t[i]!, -drds, lerp(limb.s0, limb.s1, u)));
     }
@@ -444,15 +547,16 @@ export function makeWoodGeometry(
   seed: number,
   style: WoodStyle | undefined,
   quality: RenderQuality = "high",
+  leanSide?: -1 | 1,
 ): THREE.BufferGeometry {
   const w = Math.max(0.5, Math.abs(size[0]));
   const h = Math.max(0.5, Math.abs(size[1]));
   const d = Math.max(0.5, Math.abs(size[2]));
   const st = woodStyleOf(style);
-  const sk = skeleton(st, w, h, d, seed >>> 0);
+  const { sk, minR } = skeleton(st, w, h, d, seed >>> 0, leanSide ?? seedLeanSide(seed), quality);
   const b = new Builder();
   const det = DETAIL[quality];
-  for (const limb of sk.limbs) b.sweep(limb, det);
+  for (const limb of sk.limbs) b.sweep(limb, det, minR);
 
   // exact bounding-box fit (scale factors stay close to 1: skeleton is in cm)
   const P = b.pos;
@@ -501,18 +605,45 @@ export function makeWoodGeometry(
   g.setIndex(nv > 65535 ? new THREE.Uint32BufferAttribute(b.idx, 1) : new THREE.Uint16BufferAttribute(b.idx, 1));
   g.computeBoundingBox();
   g.computeBoundingSphere();
+  // 1.4.0 metadata (fitted local frame): closed-tube triangle ranges for
+  // inside tests, epiphyte anchor hints, trunk axis, minimum tube radius
+  const fit = (p: V3): V3 => [(p[0] - cx) * sx, (p[1] - minY) * sy, (p[2] - cz) * sz];
+  const hints: number[] = [];
+  for (const hnt of sk.hints) hints.push(...fit(hnt.p), hnt.w);
+  g.userData = {
+    limbTri: b.limbTri.slice(),
+    anchorHints: hints,
+    trunk: sk.trunk ? [...fit(sk.trunk[0]), ...fit(sk.trunk[1])] : null,
+    minTubeRadius: b.minRing * Math.min(sx, sy, sz),
+  };
   return g;
 }
 
 /** Limb kinds of a style's skeleton (tests: branch / stub counts per style). */
-export function woodLimbKinds(size: [number, number, number], seed: number, style: WoodStyle): LimbKind[] {
-  return skeleton(style, Math.abs(size[0]), Math.abs(size[1]), Math.abs(size[2]), seed >>> 0).limbs.map((l) => l.kind ?? "branch");
+export function woodLimbKinds(size: [number, number, number], seed: number, style: WoodStyle, leanSide?: -1 | 1): LimbKind[] {
+  return skeleton(style, Math.abs(size[0]), Math.abs(size[1]), Math.abs(size[2]), seed >>> 0, leanSide ?? seedLeanSide(seed), "high").sk.limbs.map(
+    (l) => l.kind ?? "branch",
+  );
 }
 
-/** Trunk lean of a "root" piece from vertical, radians, and its side (−1 left / +1 right). */
-export function rootLean(size: [number, number, number], seed: number): { angle: number; side: number } {
-  const t = skeleton("root", Math.abs(size[0]), Math.abs(size[1]), Math.abs(size[2]), seed >>> 0).limbs.find((l) => l.kind === "trunk")!;
-  const a = t.pts[0]!;
-  const b = t.pts[t.pts.length - 1]!;
-  return { angle: Math.atan2(Math.abs(b[0] - a[0]), b[1] - a[1]), side: Math.sign(b[0] - a[0]) };
+/**
+ * Trunk lean of a "root" piece from vertical (radians) in the FITTED geometry,
+ * and its side (−1 left / +1 right). Without `leanSide` the side comes from
+ * the seed (direct geometry calls); HardscapeVisuals resolve it via leanSideOf.
+ */
+export function rootLean(size: [number, number, number], seed: number, leanSide?: -1 | 1, quality: RenderQuality = "high"): { angle: number; side: number } {
+  const geo = makeWoodGeometry(size, seed, "root", quality, leanSide);
+  const t = geo.userData.trunk as number[];
+  geo.dispose();
+  return { angle: Math.atan2(Math.abs(t[3]! - t[0]!), t[4]! - t[1]!), side: Math.sign(t[3]! - t[0]!) };
+}
+
+/**
+ * Resolved lean side of a root piece (1.4.0): "left" → −1, "right" → +1,
+ * "auto" / undefined → towards the tank centre (x < 0 → right, x ≥ 0 → left).
+ */
+export function leanSideOf(h: { x: number; leanSide?: "left" | "right" | "auto" | undefined }): -1 | 1 {
+  if (h.leanSide === "left") return -1;
+  if (h.leanSide === "right") return 1;
+  return h.x < 0 ? 1 : -1;
 }

@@ -16,6 +16,7 @@
 import type { LeafShape, PlantVisual, SpeciesLook } from "../contract.js";
 import { hexToRgb, healthTint, mixRgb, YOUNG_GREEN, type RGB } from "./color.js";
 import { hashString, rand } from "./rng.js";
+import type { SurfaceField } from "./surface.js";
 
 export type LayerKey = LeafShape | "stem";
 export const LEAF_SHAPES: readonly LeafShape[] = [
@@ -40,6 +41,15 @@ export interface LayoutOptions {
   waterY: number;
   /** keep leaf tips inside the glass: |x| ≤ halfW, |z| ≤ halfD */
   bounds?: { halfW: number; halfD: number };
+  /**
+   * Hardscape surfaces (1.4.0, world coordinates). When present, epiphytes /
+   * moss with plant.y > 0 are laid out ATTACHED: on the surface, never inside.
+   * For those plants `baseY` is the world y of the hardscape's bed reference
+   * (stonePlacement().bedRef), so the base sits at baseY + plant.y.
+   */
+  surface?: SurfaceField | undefined;
+  /** changes whenever `surface` changes (part of the layout cache key) */
+  surfaceKey?: string | undefined;
 }
 
 /** Hard caps per plant so one huge carpet can't blow the frame budget. */
@@ -278,6 +288,9 @@ interface Ctx {
   emitted: number;
   waterY: number;
   bounds: { halfW: number; halfD: number } | null;
+  /** world y of the bed under the plant (attached plants: the piece's bed reference) */
+  bedY: number;
+  surf: SurfaceField | null;
 }
 
 function emitLeaf(
@@ -749,6 +762,220 @@ function layoutEpiphyte(c: Ctx): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Attached to hardscape (1.4.0)
+
+const drapeDir: number[] = [0, 0, 0];
+
+/**
+ * Moss on wood / stone: a soft rounded cushion of tiny puffs that follows the
+ * surface around the base (within spread/2). Columns that leave the surface
+ * drape down past its edge; nothing is placed inside the hardscape.
+ */
+function layoutMossAttached(c: Ctx): void {
+  const surf = c.surf!;
+  const { look, H, S } = c;
+  const R = S / 2;
+  const L = look.leafLengthCm;
+  const W = look.leafWidthCm;
+  // cushion thickness: rounded, never a flat film nor a tall spike
+  const Hc = clamp(H * 0.6, 0.6, R * 0.55);
+  const per = 1.5 * (0.4 + 0.6 * look.leafDensity) / Math.max(0.02, L * W);
+  const n = Math.min(c.cap, Math.round(Math.PI * R * R * per * (c.low ? 0.6 : 1)));
+  const t = c.rnd.get(0, n);
+  const band = R * 0.6;
+  const floorY = c.bedY + 0.25;
+  const healthSize = 0.85 + 0.15 * c.health;
+  for (let i = 0; i < n; i++) {
+    const o = i * CH;
+    if (t[o]! > c.thin) continue;
+    // a few lobes so the cushion reads as clumps, not a disc
+    const a = t[o + 3]! * Math.PI * 2;
+    const lobe = 1 + 0.12 * Math.sin(a * 3 + c.rnd.seed * 0.001);
+    const u = Math.sqrt(t[o + 2]!) * Math.min(1, lobe);
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const px = c.x + ca * u * R;
+    const pz = c.z + sa * u * R;
+    const dome = Math.sqrt(Math.max(0, 1 - u * u));
+    const layerT = Math.sqrt(t[o + 4]!);
+    const top = surf.top(px, pz);
+    let py: number;
+    let draped = 0;
+    if (top !== null && top >= c.y - band && top <= c.y + band) {
+      // on the surface: cushion of thickness Hc·dome above it
+      py = top + 0.06 + Hc * dome * (0.15 + 0.85 * layerT);
+    } else if (top !== null && top > c.y + band) {
+      continue; // another limb above: not part of this cushion
+    } else {
+      // off the edge: find where the surface ends towards the base, drape down from there
+      let edgeY = NaN, edgeU = 0;
+      for (let k = 1; k <= 6; k++) {
+        const uk = u * (1 - k / 6);
+        const ty = surf.top(c.x + ca * uk * R, c.z + sa * uk * R);
+        if (ty !== null && ty >= c.y - band && ty <= c.y + band) { edgeY = ty; edgeU = uk; break; }
+      }
+      if (Number.isNaN(edgeY)) continue;
+      const dist = (u - edgeU) * R;
+      // hug the wood: only a short rounded skirt past the edge, no cone
+      const reach = Math.max(0.6, Math.min(R * 0.4, Hc * 1.3));
+      if (dist > reach) continue;
+      const q = dist / reach;
+      draped = q;
+      py = edgeY + Hc * dome * (0.15 + 0.85 * layerT) * Math.sqrt(Math.max(0, 1 - q * q)) - Hc * 0.9 * q * q;
+      if (top !== null) py = Math.max(py, top + 0.06);
+      if (py < c.y - R + 0.1) py = c.y - R + 0.1;
+    }
+    if (py < floorY) continue;
+    let qx = px, qz = pz;
+    if (c.bounds) {
+      qx = clamp(qx, -c.bounds.halfW, c.bounds.halfW);
+      qz = clamp(qz, -c.bounds.halfD, c.bounds.halfD);
+    }
+    // py is above the highest surface of its column (or the column is empty),
+    // so the puff is outside every piece; only a glass clamp can move it
+    if ((qx !== px || qz !== pz) && surf.inside(qx, py, qz)) continue;
+    if (c.emitted >= c.cap) return;
+    const elev = (draped > 0 ? -50 * draped + 30 * (1 - draped) : 10 + 70 * t[o + 5]!) * DEG;
+    dirFrom(elev, draped > 0 ? a + (t[o + 6]! - 0.5) * 1.2 : t[o + 6]! * Math.PI * 2, drapeDir);
+    // larger, overlapping puffs read as one soft cushion rather than loose dots
+    const size = (1.55 + 0.9 * t[o + 7]!) * (0.7 + 0.3 * dome) * healthSize;
+    const youth = layerT * (0.35 + 0.65 * dome) * (1 - 0.5 * draped);
+    const ao = (0.3 + 0.7 * layerT * (0.45 + 0.55 * dome)) * (1 - 0.3 * draped);
+    faceNormal(drapeDir[0]!, drapeDir[1]!, drapeDir[2]!, 0.3, (t[o + 9]! - 0.5) * 0.3, (t[o + 10]! - 0.5) * 0.2, nrm);
+    leafColor(c.pal, youth, ao, t[o + 8]! * 2 - 1, col);
+    c.buf.add("moss", qx, py, qz, drapeDir[0]!, drapeDir[1]!, drapeDir[2]!, nrm[0]!, nrm[1]!, nrm[2]!, L * size, W * size, col);
+    c.emitted++;
+  }
+}
+
+const leafPt: number[] = [0, 0, 0];
+
+/** True when any of a few points along the leaf blade is inside hardscape. */
+function leafHits(surf: SurfaceField, px: number, py: number, pz: number, d: number[], len: number): boolean {
+  for (const f of [0, 0.3, 0.6, 1]) {
+    leafPt[0] = px + d[0]! * len * f;
+    leafPt[1] = py + d[1]! * len * f;
+    leafPt[2] = pz + d[2]! * len * f;
+    if (surf.inside(leafPt[0], leafPt[1], leafPt[2])) return true;
+  }
+  return false;
+}
+
+/**
+ * Anubias / Bucephalandra / Java fern on hardscape: a short horizontal rhizome
+ * lying on the surface; leaves on short petioles fan up (~35°) and forward
+ * (+z, towards the viewer). Leaves that would cut into the hardscape are
+ * tilted further up / forward, or dropped.
+ */
+function layoutEpiphyteAttached(c: Ctx): void {
+  const surf = c.surf!;
+  const { look, H, S } = c;
+  const L = look.leafLengthCm;
+  const W = look.leafWidthCm;
+  // dense, layered clump (never a few sparse blades)
+  let n = Math.round((9 + S * 2.2) * (0.6 + 0.6 * look.leafDensity));
+  if (c.low) n = Math.round(n * 0.7);
+  const t = c.rnd.get(0, n + 1);
+  const gs = clamp(H / (L * 1.05), 0.35, 1.15);
+  // rounded, readable blades: attached clumps are seen close up, so a bit broader
+  const Wv = Math.max(visualWidth(L, W), L * 0.42);
+  const rr = clamp(W * 0.16, 0.22, 0.42); // rhizome radius
+  // rhizome: roughly along x (reads as a horizontal line from the front)
+  const rhAng = (t[n * CH + 1]! * 2 - 1) * 0.45;
+  const rx = Math.cos(rhAng), rz = Math.sin(rhAng);
+  const rhLen = clamp(S * 0.45, 1, 14);
+  const K = 6;
+  const ry: number[] = [];
+  const band = Math.max(1, rhLen * 0.3);
+  let lo = K / 2, hi = K / 2;
+  for (let k = 0; k <= K; k++) {
+    const u = k / K - 0.5;
+    const ty = surf.top(c.x + rx * rhLen * u, c.z + rz * rhLen * u);
+    ry.push(ty !== null && Math.abs(ty - c.y) <= band ? ty : NaN);
+  }
+  if (Number.isNaN(ry[K / 2]!)) ry[K / 2] = c.y; // anchor off the mesh: trust the caller's y
+  while (lo > 0 && !Number.isNaN(ry[lo - 1]!)) lo--;
+  while (hi < K && !Number.isNaN(ry[hi + 1]!)) hi++;
+  const ptAt = (u: number, out: number[]) => {
+    // u ∈ [0, 1] over the valid rhizome span
+    const f = lo + (hi - lo) * u;
+    const k = Math.min(hi, Math.floor(f));
+    const k1 = Math.min(hi, k + 1);
+    const w = k1 > k ? f - k : 0;
+    const s = k / K - 0.5 + (w * (k1 - k)) / K;
+    out[0] = c.x + rx * rhLen * s;
+    out[1] = (ry[k]! * (1 - w) + ry[k1]! * w) + rr * 0.85;
+    out[2] = c.z + rz * rhLen * s;
+    return out;
+  };
+  const p0: number[] = [0, 0, 0], p1: number[] = [0, 0, 0];
+  // rhizome segments lying on the surface
+  const segs = Math.max(1, hi - lo);
+  for (let k = 0; k < segs; k++) {
+    if (c.emitted >= c.cap) return;
+    ptAt(k / segs, p0);
+    ptAt((k + 1) / segs, p1);
+    const dx = p1[0]! - p0[0]!, dy = p1[1]! - p0[1]!, dz = p1[2]! - p0[2]!;
+    const l = Math.hypot(dx, dy, dz);
+    if (l < 1e-3) continue;
+    c.buf.add("stem", p0[0]!, p0[1]!, p0[2]!, dx, dy, dz, 0, 1, 0, l * 1.04, rr * 2, mixRgb(c.pal.stem, c.pal.deep, 0.35, tmpC2));
+    c.emitted++;
+  }
+  // longer leaves (Java fern) stand a little more upright
+  const elevBase = 30 + clamp((L - 3) * 2, 0, 14);
+  const pet: number[] = [0, 0, 0];
+  for (let i = 0; i < n; i++) {
+    const o = i * CH;
+    const keep = c.thin + (1 - c.thin) * (i / n);
+    if (t[o]! > keep) continue;
+    ptAt(t[o + 2]!, p0);
+    const size = (0.65 + 0.45 * t[o + 4]!) * gs;
+    const len = L * size;
+    // fan: left / right of straight-at-the-camera (leaves pointing exactly
+    // at the viewer would read foreshortened), always forward, ~35° up;
+    // younger (later) leaves a bit higher
+    const side = t[o + 7]! < 0.5 ? -1 : 1;
+    let az = Math.PI * 0.5 + side * (0.3 + 0.95 * Math.abs(t[o + 7]! * 2 - 1));
+    let elev = (elevBase + 14 * t[o + 6]! + 8 * (i / n)) * DEG;
+    // never dive into the surface: at least 18° above its local slope along az
+    {
+      const hx = Math.cos(az), hz = Math.sin(az);
+      const ahead = surf.top(p0[0]! + hx * 0.8, p0[2]! + hz * 0.8);
+      const here = surf.top(p0[0]!, p0[2]!);
+      if (ahead !== null && here !== null) elev = Math.max(elev, Math.atan2(ahead - here, 0.8) + 18 * DEG);
+      elev = Math.min(elev, 72 * DEG);
+    }
+    const petLen0 = Math.min(len * 0.14, 0.25 + H * 0.05) * (0.6 + 0.8 * t[o + 5]!);
+    let petLen = petLen0;
+    let placed = false;
+    for (let tries = 0; tries < 8 && !placed; tries++) {
+      // petiole rises steeper than the blade
+      dirFrom(Math.min(80 * DEG, elev + 25 * DEG), az, pet);
+      const bx = p0[0]! + pet[0]! * petLen, by = p0[1]! + pet[1]! * petLen, bz = p0[2]! + pet[2]! * petLen;
+      dirFrom(elev, az, dir);
+      if (surf.inside(bx, by, bz) || leafHits(surf, bx, by, bz, dir, len)) {
+        // steer up and lift the blade on a longer petiole, then turn it to the viewer
+        elev = Math.min(75 * DEG, elev + 10 * DEG);
+        petLen *= 1.3;
+        if (tries >= 3) az = Math.PI * 0.5 + (az - Math.PI * 0.5) * 0.5;
+        continue;
+      }
+      placed = true;
+      if (c.emitted < c.cap) {
+        c.buf.add("stem", p0[0]!, p0[1]!, p0[2]!, bx - p0[0]!, by - p0[1]!, bz - p0[2]!, 0, 0, 1, petLen, clamp(W * 0.09, 0.08, 0.22), c.pal.stem);
+        c.emitted++;
+      }
+      const youth = t[o + 8]! * 0.6 + (i / n) * 0.4;
+      const ao = 0.6 + 0.4 * (i / n);
+      if (!emitLeaf(c, look.leafShape, bx, by, bz, dir[0]!, dir[1]!, dir[2]!, 0.68,
+        (t[o + 9]! - 0.5) * 0.3, (t[o + 10]! - 0.5) * 0.2, t[o + 11]! * 2 - 1,
+        len, Wv * size, youth, ao)) return;
+    }
+  }
+}
+
+const tmpC2: RGB = [0, 0, 0];
+
 function layoutFloating(c: Ctx): void {
   const { look, S } = c;
   const R = S / 2;
@@ -803,7 +1030,15 @@ export function layoutPlant(
     emitted: 0,
     waterY: opts.waterY,
     bounds: opts.bounds ?? null,
+    bedY: opts.baseY,
+    surf: opts.surface ?? null,
   };
+  const attached = c.surf !== null && (plant.y || 0) > 0 && (look.growthForm === "moss" || look.growthForm === "epiphyte");
+  if (attached) {
+    if (look.growthForm === "moss") layoutMossAttached(c);
+    else layoutEpiphyteAttached(c);
+    return c.emitted;
+  }
   switch (look.growthForm) {
     case "carpeting":
       layoutCarpet(c, look.leafShape === "moss");
@@ -881,7 +1116,7 @@ export class LayoutCache {
     const b = opts.bounds;
     const key =
       `${lookIdOf(look)}|${opts.quality}|${plant.x}|${plant.z}|${plant.y}|${plant.heightCm}|${plant.spreadCm}|${plant.health}` +
-      `|${opts.baseY}|${opts.waterY}|${b ? `${b.halfW},${b.halfD}` : "-"}`;
+      `|${opts.baseY}|${opts.waterY}|${b ? `${b.halfW},${b.halfD}` : "-"}|${opts.surface ? opts.surfaceKey ?? "?" : "-"}`;
     let e = this.entries.get(plant.id);
     if (e && e.key === key) {
       this.hits++;
