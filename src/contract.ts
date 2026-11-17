@@ -16,7 +16,44 @@
  * smooth sculptural stones.
  */
 
-export const RENDER_CONTRACT_VERSION = "1.3.0" as const;
+export const RENDER_CONTRACT_VERSION = "1.4.0" as const;
+
+/*
+ * 1.4.0 (2026-11-17, additive — epiphytes tied onto hardscape, 11-16 objections):
+ *  - New pure export hardscapeSurfaceY(h, x, z, opts?) → number | null.
+ *    Height (cm) of the TOP surface of piece h at floor column (x, z), measured
+ *    in the same frame as PlantVisual.y (above the local bed surface, i.e.
+ *    already net of buriedFrac). null when the column misses the piece.
+ *    Must agree with the rendered geometry to ≤ 0.5 cm (test: ray-cast the
+ *    built mesh at ≥ 50 sample columns per wood style and per stone role).
+ *    Deterministic from (kind, seed, sizeCm, rotationY, role, woodStyle,
+ *    leanSide, buriedFrac); no three.js scene required; may reuse the per-piece
+ *    geometry cache. opts.quality defaults to "high".
+ *  - New pure export hardscapeAnchors(h, n, opts?) → Array<{x, z, y, nx, ny, nz}>:
+ *    n deterministic attachment points on the piece's upward-facing surface
+ *    (normal.y ≥ 0.35), spread out (farthest-point sampling), sorted front-to-
+ *    back then left-to-right; (nx, ny, nz) is the unit surface normal. For
+ *    wood, prefer branch forks / the upper trunk and the log's top; for stones,
+ *    the upper shoulders. y frame = hardscapeSurfaceY. Returns [] for n ≤ 0.
+ *  - Epiphyte rendering: a PlantVisual whose species growthForm is "epiphyte"
+ *    or "moss" and whose y > 0 is drawn ATTACHED: its base (rhizome / moss
+ *    cushion) sits on the surface at (x, y, z) and leaves never visibly pass
+ *    through the hardscape. Moss on hardscape is a soft rounded cushion of
+ *    tiny leaves that drapes over the surface (follows it within ~spreadCm/2),
+ *    clearly denser and fuller than "matchsticks". Anubias / Bucephalandra /
+ *    Java fern: a short horizontal rhizome lying on the surface with leaves
+ *    fanning up and forward (towards the viewer, +z), ~35° tilt as for all
+ *    leaves. Epiphytes with y = 0 keep the 1.3.0 look (planted in the bed).
+ *  - HardscapeVisual.leanSide (optional, wood "root" only):
+ *    "left" | "right" | "auto" (default "auto"). The trunk's top leans towards
+ *    that side; "auto" leans towards the tank centre (x < 0 → right, x ≥ 0 →
+ *    left). The lean is 30–45° whatever the box aspect: in a narrow tall box
+ *    the trunk is shortened / branches bend inward instead of the lean
+ *    dropping below 30°.
+ *  - Per-piece geometry cache key adds quality and leanSide.
+ *  - Twig tips: wood tubes never taper below 0.35 cm radius at quality "high"
+ *    (0.45 cm at "low"), so thin branches read as rounded, not matchsticks.
+ */
 
 /*
  * 1.3.0 (2026-11-16, additive — driftwood + resizable hardscape, P2 editor):
@@ -188,6 +225,22 @@ export interface HardscapeVisual {
   buriedFrac?: number | undefined;
   /** driftwood silhouette (1.3.0), kind "wood" only; default "branchy" */
   woodStyle?: WoodStyle | undefined;
+  /** root-wood lean direction (1.4.0); default "auto" = towards the tank centre */
+  leanSide?: LeanSide | undefined;
+}
+
+/** Lean direction of "root" driftwood (1.4.0). */
+export type LeanSide = "left" | "right" | "auto";
+
+/** An attachment point on a hardscape surface (1.4.0). */
+export interface SurfaceAnchor {
+  x: number;
+  z: number;
+  /** same frame as PlantVisual.y / hardscapeSurfaceY */
+  y: number;
+  nx: number;
+  ny: number;
+  nz: number;
 }
 
 /** Driftwood silhouettes (1.3.0). */
@@ -277,4 +330,9 @@ export interface BotanyRecordLike {
  *       marginCm (default 0). Pure; used by web to reject plant drops on stones.
  *   export function clampHardscapeXZ(h: HardscapeVisual, tank: { widthCm: number; depthCm: number }, x: number, z: number): { x: number; z: number }
  *     — (1.3.0) see notes above. Pure.
+ *   export function hardscapeSurfaceY(h: HardscapeVisual, x: number, z: number, opts?: { quality?: "high" | "low" | undefined }): number | null
+ *     — (1.4.0) see notes above. Pure.
+ *   export function hardscapeAnchors(h: HardscapeVisual, n: number, opts?: { quality?: "high" | "low" | undefined }): SurfaceAnchor[]
+ *     — (1.4.0) see notes above. Pure.
+ *   Types LeanSide and SurfaceAnchor are exported from the package index.
  */
