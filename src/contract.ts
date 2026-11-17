@@ -9,7 +9,7 @@
  * floor (substrate surface y = 0); x left → right, z back → front (the viewer
  * looks from +z towards −z), y up. Units: cm.
  *
- * Visual direction (ROADMAP "视觉风格"): stylized, not photoreal. Front view
+ * Visual direction (ROADMAP "Visual style"): stylized, not photoreal. Front view
  * only. Pure-white studio background, soft studio light, rounded thick leaves
  * with soft back-light translucency tilted ~35° upward, dense layered foliage,
  * fresh green gradients with coral (#E8735A-ish) accents for red plants,
@@ -19,7 +19,7 @@
 export const RENDER_CONTRACT_VERSION = "1.3.0" as const;
 
 /*
- * 1.3.0 (2026-11-16, additive — driftwood + resizable hardscape, P2 编辑器):
+ * 1.3.0 (2026-11-16, additive — driftwood + resizable hardscape, P2 editor):
  *  - HardscapeVisual.woodStyle (optional, kind "wood" only, default "branchy"):
  *    · "branchy" — spider-wood: a short buried base splitting into 4–7 slender
  *      tapered branches that fan UP and outward (canopy silhouette), a few
@@ -29,7 +29,7 @@ export const RENDER_CONTRACT_VERSION = "1.3.0" as const;
  *      the far side; the classic Nature-style "tree" focal piece.
  *    · "log"     — a low, mostly horizontal bog-wood chunk with 1–2 short
  *      stubs; reads as a ledge for epiphytes.
- *    Look (ROADMAP 视觉风格): smooth, sculptural, softly rounded tubes with
+ *    Look (ROADMAP "Visual style"): smooth, sculptural, softly rounded tubes with
  *    continuous taper and soft joints — NO bark texture, no hard creases.
  *    Warm stylized brown, slightly lighter at the tips (≈ #7A5A43 → #A88466),
  *    low gloss. Wood default buriedFrac is 0.05 (only the base touches the bed).
@@ -58,7 +58,7 @@ export const RENDER_CONTRACT_VERSION = "1.3.0" as const;
  */
 
 /*
- * 1.2.0 (2026-11-15, additive — drag editing, P2 编辑器):
+ * 1.2.0 (2026-11-15, additive — drag editing, P2 editor):
  *  - FrontalTankProps.editable (default false). When false the component
  *    behaves exactly like 1.1.x (no picking, no cursor change, no handlers).
  *  - Picking: pointer-down on a hardscape piece or a plant instance selects
