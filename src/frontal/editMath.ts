@@ -11,6 +11,7 @@
  */
 import type { EditMoveEvent, EditTarget, HardscapeVisual, PlantVisual, SpeciesLook } from "../contract.js";
 import { substrateHeight } from "./layout.js";
+import { hardscapeExtent } from "./surface.js";
 import { fitCamera, frontGlassRect, projectPoint, type Rect, type TankGeom } from "./tank.js";
 
 // ---------------------------------------------------------------------------
@@ -59,11 +60,27 @@ export function clampToGlass(t: TankSize, x: number, z: number, inset = GLASS_IN
   return { x: Math.min(hx, Math.max(-hx, cx)), z: Math.min(hz, Math.max(-hz, cz)) };
 }
 
+/** Allowed range of a centre coordinate so [v + lo, v + hi] stays `inset` inside ±half; centred when too wide. */
+function limitExtent(half: number, lo: number, hi: number, v: number): number {
+  const vmin = -half + GLASS_INSET_CM - lo;
+  const vmax = half - GLASS_INSET_CM - hi;
+  // wider than the interior: centre the extent on this axis
+  if (!(vmin <= vmax)) return (vmin + vmax) / 2;
+  return Math.min(vmax, Math.max(vmin, v));
+}
+
+/** Finite input coordinate: NaN → 0, ±∞ → far outside (clamped next). */
+const finiteCoord = (v: number): number => (Number.isNaN(v) ? 0 : Math.max(-1e6, Math.min(1e6, v)));
+
 /**
- * (1.3.0) Clamp a hardscape position so the piece's rotated footprint ellipse
- * (half-axes sizeCm[0]/2, sizeCm[2]/2, rotated by rotationY) stays ≥ 1 cm
- * inside the glass on x and z. An axis on which the footprint is wider than
- * the interior (minus the 1 cm margins) is centred at 0. Pure.
+ * (1.4.1) Clamp a hardscape position so the REAL above-bed extent of the
+ * built, rotated piece (hardscapeExtent) stays ≥ 1 cm inside the glass on x
+ * and z. An axis on which that extent is wider than the interior (minus the
+ * 1 cm margins) is centred: the extent's midpoint goes to 0. Pure; the extent
+ * comes from the shared shape store, so it never rebuilds a rendered piece.
+ *
+ * The extent depends on x only through its sign (stone lean, "auto" root
+ * lean), so the clamp is re-evaluated at the clamped x until both agree.
  */
 export function clampHardscapeXZ(
   h: HardscapeVisual,
@@ -71,21 +88,29 @@ export function clampHardscapeXZ(
   x: number,
   z: number,
 ): { x: number; z: number } {
-  const a = Math.abs(h.sizeCm[0]) / 2;
-  const c = Math.abs(h.sizeCm[2]) / 2;
-  const r = Number.isFinite(h.rotationY) ? h.rotationY : 0;
-  const cos = Math.cos(r);
-  const sin = Math.sin(r);
-  // half extents of the rotated ellipse along world x / z
-  const ex = Math.hypot(a * cos, c * sin);
-  const ez = Math.hypot(a * sin, c * cos);
-  const lim = (half: number, e: number, v: number): number => {
-    const m = half - GLASS_INSET_CM - e;
-    if (!(m > 0)) return 0;
-    const cv = Number.isNaN(v) ? 0 : v;
-    return Math.min(m, Math.max(-m, cv));
+  const hw = tank.widthCm / 2;
+  const hd = tank.depthCm / 2;
+  const x0 = finiteCoord(x);
+  const z0 = finiteCoord(z);
+  const solve = (at: number) => {
+    const e = hardscapeExtent({ ...h, x: at, z: z0 });
+    return { x: limitExtent(hw, e.minX, e.maxX, x0), z: limitExtent(hd, e.minZ, e.maxZ, z0) };
   };
-  return { x: lim(tank.widthCm / 2, ex, x), z: lim(tank.depthCm / 2, ez, z) };
+  let r = solve(x0);
+  for (let i = 0; i < 3; i++) {
+    const next = solve(r.x);
+    if (next.x === r.x && next.z === r.z) return { x: r.x, z: r.z };
+    r = next;
+  }
+  // the lean flips with the side of x (only possible near x = 0): use the
+  // union of both sides' extents, which is valid whichever side wins
+  let lo = Infinity, hi = -Infinity, zlo = Infinity, zhi = -Infinity;
+  for (const at of [-1, 0, 1]) {
+    const e = hardscapeExtent({ ...h, x: at, z: z0 });
+    lo = Math.min(lo, e.minX); hi = Math.max(hi, e.maxX);
+    zlo = Math.min(zlo, e.minZ); zhi = Math.max(zhi, e.maxZ);
+  }
+  return { x: limitExtent(hw, lo, hi, x0), z: limitExtent(hd, zlo, zhi, z0) };
 }
 
 /** Fraction of the visible tank height that maps onto the full tank depth. */

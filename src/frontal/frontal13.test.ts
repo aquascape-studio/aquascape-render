@@ -18,7 +18,8 @@ import {
   visibleGlass,
 } from "./editMath.js";
 import { FieldSync } from "./fieldSync.js";
-import { HardscapeGeometryCache, buildHardscapeGeometry, hardscapeGeometryKey } from "./hardscapeCache.js";
+import { hardscapeExtent } from "./surface.js";
+import { HardscapeGeometryCache, buildHardscapeGeometry, clearShapeStore, hardscapeGeometryKey } from "./hardscapeCache.js";
 import { substrateHeight, type LayoutOptions } from "./layout.js";
 import { speciesLook } from "./speciesLook.js";
 import { DEFAULT_BURIED_FRAC_WOOD, buriedFrac, stonePlacement } from "./stones.js";
@@ -37,8 +38,8 @@ function lum(c: THREE.BufferAttribute, i: number): number {
 }
 
 describe("contract version", () => {
-  it("is 1.3.0 or a later additive version", () => {
-    expect(["1.3.0", "1.4.0"]).toContain(RENDER_CONTRACT_VERSION);
+  it("is 1.3.0 or a later compatible version", () => {
+    expect(["1.3.0", "1.4.0", "1.4.1"]).toContain(RENDER_CONTRACT_VERSION);
   });
 });
 
@@ -288,29 +289,45 @@ describe("per-piece geometry cache (1.3.0)", () => {
     cache.dispose();
   });
 
-  it("benchmark: one rebuild ≤ 8 ms CPU at quality high (median of several runs)", () => {
+  it("benchmark: one rebuild ≤ 8 ms CPU at quality high (median of 21 runs after warm-up)", () => {
     const cases: HardscapeVisual[] = [
       ...WOOD_STYLES.map((s) => wood({ id: `w-${s}`, woodStyle: s, sizeCm: [40, 34, 20] })),
       { id: "stone", kind: "stone", role: "oyaishi", x: 0, z: 0, rotationY: 0, sizeCm: [13, 23, 10], seed: 101 },
     ];
     const cache = new HardscapeGeometryCache();
     const report: string[] = [];
+    // Robust on shared CI runners (1.4.1): the budget is CPU time (contract:
+    // "≤ 8 ms CPU on the main thread"), measured with process.cpuUsage() in
+    // this test's own worker process (vitest pool "forks"), so other test
+    // files running in parallel no longer inflate it as wall-clock time did.
+    // Longer JIT warm-up, 21 samples, median (a GC pause hits a few samples,
+    // not the median). The 8 ms budget itself is unchanged; wall time is
+    // reported alongside.
+    const RUNS = 21;
+    const cpuMs = (u: NodeJS.CpuUsage) => (u.user + u.system) / 1000;
     for (const base of cases) {
-      // warm-up (JIT)
-      for (let i = 0; i < 3; i++) cache.get({ ...base, sizeCm: [base.sizeCm[0] + i * 0.3, base.sizeCm[1], base.sizeCm[2]] }, "high");
-      const times: number[] = [];
-      for (let i = 0; i < 9; i++) {
-        // each resize step changes the key ⇒ exactly one rebuild
-        const h = { ...base, sizeCm: [base.sizeCm[0] - 2 + i * 0.5, base.sizeCm[1] + i * 0.2, base.sizeCm[2]] as [number, number, number] };
+      for (let i = 0; i < 8; i++) {
+        clearShapeStore();
+        cache.get({ ...base, sizeCm: [base.sizeCm[0] + 3 + i * 0.3, base.sizeCm[1], base.sizeCm[2]] }, "high");
+      }
+      const cpu: number[] = [];
+      const wall: number[] = [];
+      for (let i = 0; i < RUNS; i++) {
+        // each resize step changes the key ⇒ exactly one full rebuild (no shape-store clone)
+        clearShapeStore();
+        const h = { ...base, sizeCm: [base.sizeCm[0] - 2 + i * 0.2, base.sizeCm[1] + i * 0.1, base.sizeCm[2]] as [number, number, number] };
         const before = cache.builds;
+        const c0 = process.cpuUsage();
         const t0 = performance.now();
         cache.get(h, "high");
-        times.push(performance.now() - t0);
+        wall.push(performance.now() - t0);
+        cpu.push(cpuMs(process.cpuUsage(c0)));
         expect(cache.builds).toBe(before + 1);
       }
-      times.sort((a, b) => a - b);
-      const median = times[Math.floor(times.length / 2)]!;
-      report.push(`${base.id} median ${median.toFixed(2)} ms (max ${times[times.length - 1]!.toFixed(2)})`);
+      cpu.sort((a, b) => a - b);
+      wall.sort((a, b) => a - b);
+      const median = cpu[Math.floor(RUNS / 2)]!;
+      report.push(`${base.id} CPU median ${median.toFixed(2)} ms (p90 ${cpu[Math.floor(RUNS * 0.9)]!.toFixed(2)}), wall median ${wall[Math.floor(RUNS / 2)]!.toFixed(2)} ms`);
       expect(median).toBeLessThan(8);
     }
     console.log(`[hardscape rebuild bench, quality high] ${report.join("; ")}`);
@@ -318,7 +335,7 @@ describe("per-piece geometry cache (1.3.0)", () => {
   });
 });
 
-describe("clampHardscapeXZ (1.3.0)", () => {
+describe("clampHardscapeXZ (1.3.0, real-extent semantics since 1.4.1)", () => {
   const T = { widthCm: 60, depthCm: 36 };
   const st = (over: Partial<HardscapeVisual> = {}): HardscapeVisual => ({ id: "s", kind: "stone", x: 0, z: 0, rotationY: 0, sizeCm: [12, 8, 6], seed: 1, ...over });
 
@@ -326,42 +343,41 @@ describe("clampHardscapeXZ (1.3.0)", () => {
     expect(pkg.clampHardscapeXZ).toBe(clampHardscapeXZ);
   });
 
-  it("axis-aligned: footprint edge stays 1 cm inside the glass", () => {
-    const h = st(); // half-axes 6 × 3
-    expect(clampHardscapeXZ(h, T, 100, -100)).toEqual({ x: 30 - 1 - 6, z: -(18 - 1 - 3) });
+  it("axis-aligned: the above-bed extent edge stays exactly 1 cm inside the glass", () => {
+    const h = st();
+    const far = clampHardscapeXZ(h, T, 100, -100);
+    const e = hardscapeExtent({ ...h, x: far.x, z: far.z });
+    expect(far.x + e.maxX).toBeCloseTo(30 - 1, 9);
+    expect(far.z + e.minZ).toBeCloseTo(-(18 - 1), 9);
+    // the real extent of a smooth stone is within its bounding ellipse
+    expect(e.maxX).toBeLessThanOrEqual(6 + 1e-6);
+    expect(-e.minZ).toBeLessThanOrEqual(3 + 1e-6);
     expect(clampHardscapeXZ(h, T, 4, -2)).toEqual({ x: 4, z: -2 });
     expect(clampHardscapeXZ(h, T, Number.NaN, 0)).toEqual({ x: 0, z: 0 });
   });
 
-  it("rotated: uses the rotated ellipse's extents", () => {
-    const h = st({ rotationY: Math.PI / 2 }); // long axis along z
+  it("rotated: uses the rotated piece's real extent", () => {
+    const h = st({ rotationY: Math.PI / 2, sizeCm: [20, 8, 9] }); // long axis along z
     const p = clampHardscapeXZ(h, T, 100, 100);
-    expect(p.x).toBeCloseTo(30 - 1 - 3, 9);
-    expect(p.z).toBeCloseTo(18 - 1 - 6, 9);
-    // property: every footprint point is ≥ 1 cm inside, for many rotations
-    for (let k = 0; k < 24; k++) {
-      const r = (k / 24) * Math.PI * 2;
-      const hh = st({ rotationY: r, sizeCm: [20, 8, 9] });
-      for (const [x, z] of [[100, 100], [-100, 50], [12, -100]] as const) {
-        const c = clampHardscapeXZ(hh, T, x, z);
-        let maxX = -Infinity, maxZ = -Infinity;
-        for (let i = 0; i < 360; i++) {
-          const a = (i / 360) * Math.PI * 2;
-          const lx = 10 * Math.cos(a), lz = 4.5 * Math.sin(a);
-          maxX = Math.max(maxX, Math.abs(c.x + lx * Math.cos(r) + lz * Math.sin(r)));
-          maxZ = Math.max(maxZ, Math.abs(c.z - lx * Math.sin(r) + lz * Math.cos(r)));
-        }
-        expect(maxX).toBeLessThanOrEqual(30 - GLASS_INSET_CM + 1e-6);
-        expect(maxZ).toBeLessThanOrEqual(18 - GLASS_INSET_CM + 1e-6);
-        expect(maxX > 30 - GLASS_INSET_CM - 0.05 || maxZ > 18 - GLASS_INSET_CM - 0.05).toBe(true);
-      }
-    }
+    const e = hardscapeExtent({ ...h, x: p.x });
+    expect(p.x + e.maxX).toBeCloseTo(30 - 1, 9);
+    expect(p.z + e.maxZ).toBeCloseTo(18 - 1, 9);
+    expect(e.maxZ - e.minZ).toBeGreaterThan(e.maxX - e.minX);
   });
 
-  it("an axis where the footprint is wider than the interior is centred", () => {
-    expect(clampHardscapeXZ(st({ sizeCm: [70, 8, 6] }), T, 12, 5)).toEqual({ x: 0, z: 5 });
-    expect(clampHardscapeXZ(st({ sizeCm: [10, 8, 40] }), T, 12, 5)).toEqual({ x: 12, z: 0 });
-    expect(clampHardscapeXZ(st({ sizeCm: [58, 8, 6] }), T, 12, 5).x).toBe(0); // 58 + 2 margins ≥ 60
+  it("an axis where the extent is wider than the interior is centred (extent midpoint at 0)", () => {
+    for (const [sizeCm, axis] of [[[70, 8, 6], "x"], [[10, 8, 40], "z"], [[60, 8, 6], "x"]] as const) {
+      const h = st({ sizeCm: [...sizeCm] as [number, number, number] });
+      const p = clampHardscapeXZ(h, T, 12, 5);
+      const e = hardscapeExtent({ ...h, x: p.x, z: p.z });
+      if (axis === "x") {
+        expect(p.x + (e.minX + e.maxX) / 2).toBeCloseTo(0, 9);
+        expect(p.z).toBe(5);
+      } else {
+        expect(p.z + (e.minZ + e.maxZ) / 2).toBeCloseTo(0, 9);
+        expect(p.x).toBe(12);
+      }
+    }
   });
 });
 

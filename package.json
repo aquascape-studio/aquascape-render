@@ -1,6 +1,6 @@
 {
   "name": "@aquascape-studio/render",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "React Three Fiber aquarium scene \u2014 ink-green palette, procedural hardscape + plants",
   "type": "module",
   "sideEffects": false,

@@ -6,6 +6,12 @@
  * x / z / rotationY / buriedFrac are placement only (applied on the parent
  * group), so they never rebuild geometry. Changing one piece's shape inputs
  * rebuilds only that piece; its previous geometry is disposed.
+ *
+ * 1.4.1: every geometry built for a shape key is also remembered in a small
+ * module-level shape store (LRU, CPU data only). The pure helpers
+ * (hardscapeExtent → clampHardscapeXZ, hardscapeSurfaceY, hardscapeAnchors)
+ * read their vertices from there, so they never rebuild a piece the renderer
+ * already built, and the renderer clones a shape a helper built first.
  */
 import type * as THREE from "three";
 import type { HardscapeVisual } from "../contract.js";
@@ -39,6 +45,51 @@ export function buildHardscapeGeometry(h: HardscapeVisual, quality: RenderQualit
   return quality === "high" ? makeStoneGeometry(size, h.seed, h.role) : makeStoneGeometry(size, h.seed, h.role, 48, 32);
 }
 
+// ---------------------------------------------------------------------------
+// Shape store (1.4.1)
+
+/** Shapes remembered (one per shape key, i.e. per distinct piece shape). */
+export const SHAPE_STORE_MAX = 32;
+const shapes = new Map<string, THREE.BufferGeometry>();
+/** Geometries the shape store had to build itself (store misses). */
+export const shapeStoreStats = { builds: 0 };
+
+/** Remember a built geometry for its shape key (CPU arrays only; never rendered from here). */
+export function rememberShape(key: string, geo: THREE.BufferGeometry): void {
+  shapes.delete(key);
+  shapes.set(key, geo);
+  if (shapes.size > SHAPE_STORE_MAX) shapes.delete(shapes.keys().next().value!);
+}
+
+/** A remembered geometry for this shape key, or undefined. */
+export function peekShape(key: string): THREE.BufferGeometry | undefined {
+  const g = shapes.get(key);
+  if (g) {
+    shapes.delete(key);
+    shapes.set(key, g);
+  }
+  return g;
+}
+
+/** Forget every remembered shape (tests / benchmarks). */
+export function clearShapeStore(): void {
+  shapes.clear();
+}
+
+/**
+ * Read-only geometry of h's shape (built once per shape key, then shared).
+ * Callers must not dispose or mutate it; only its CPU arrays are used.
+ */
+export function shapeGeometry(h: HardscapeVisual, quality: RenderQuality): THREE.BufferGeometry {
+  const key = hardscapeShapeKey(h, quality);
+  const hit = peekShape(key);
+  if (hit) return hit;
+  const geo = buildHardscapeGeometry(h, quality);
+  shapeStoreStats.builds++;
+  rememberShape(key, geo);
+  return geo;
+}
+
 interface Entry {
   key: string;
   geo: THREE.BufferGeometry;
@@ -56,7 +107,11 @@ export class HardscapeGeometryCache {
     const key = hardscapeGeometryKey(h, quality);
     const e = this.byId.get(h.id);
     if (e && e.key === key) return e.geo;
-    const geo = this.build(h, quality);
+    const shapeKey = hardscapeShapeKey(h, quality);
+    const known = this.build === buildHardscapeGeometry ? peekShape(shapeKey) : undefined;
+    // a shape a pure helper already built is cloned (this cache owns and disposes its geometry)
+    const geo = known ? known.clone() : this.build(h, quality);
+    if (!known) rememberShape(shapeKey, geo);
     this.builds++;
     e?.geo.dispose();
     this.byId.set(h.id, { key, geo });
