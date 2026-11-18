@@ -33,12 +33,14 @@ export const RENDER_CONTRACT_VERSION = "1.4.1" as const;
  *  - New pure export resolveLeanSide(h) → "left" | "right": what "auto" (or
  *    an explicit side) resolves to for h. "auto" is still x-dependent;
  *    callers that must not flip (the editor) store the resolved side.
- *  - hardscapeSurfaceY reference, normative: y is measured from the bed
- *    surface height AT THE PIECE CENTRE (h.x, h.z) — the height FrontalTank
- *    seats the piece on. FrontalTank draws an attached plant at
- *    bedY(h.x, h.z) + y (not bedY(x, z) + y). Test: on a sloped bed
- *    (front 2 cm, back 8 cm) an attached plant's base is within 0.5 cm of the
- *    rendered surface, for plants ≥ 10 cm from the piece centre.
+ *  - hardscapeSurfaceY reference, normative (amended at integration after
+ *    render-agent's objection): y is measured from the piece's SEAT height —
+ *    the single bed height FrontalTank seats the whole piece at (on a slope,
+ *    the lowest bed point under its base, so it never floats; equals
+ *    bedY(h.x, h.z) on a flat bed). FrontalTank draws an attached plant at
+ *    seatY(h) + y — one height per piece, never bedY(x, z) + y. Test: on a
+ *    sloped bed (front 2 cm, back 8 cm) an attached plant's base is within
+ *    0.5 cm of the rendered surface, for plants ≥ 10 cm from the piece centre.
  *  - A column that only hits buried geometry (at or below the bed) returns
  *    null, never y ≤ 0. hardscapeAnchors never returns y ≤ 0.2 cm.
  *  - No visual change intended; front-view screenshots must match 1.4.0
