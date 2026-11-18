@@ -41,7 +41,7 @@ function positionOf(s: EditPropsSnapshot, t: EditTarget): { x: number; z: number
 
 /**
  * Clamp for one drag (1.3.0): plants keep their centre 1 cm inside the glass;
- * hardscape keeps its rotated footprint ellipse 1 cm inside (clampHardscapeXZ).
+ * hardscape keeps its real above-bed extent 1 cm inside (clampHardscapeXZ, 1.4.1).
  * Shape inputs are captured at drag start (the caller only changes x/z).
  */
 export function dragClamp(s: EditPropsSnapshot, t: EditTarget, g: { w: number; d: number }): (x: number, z: number) => { x: number; z: number } {

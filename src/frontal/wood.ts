@@ -471,15 +471,30 @@ class Builder {
       frames.push({ n: nrm, b });
     }
     const L = Math.max(1e-6, c.length);
+    // ring directions: cos / sin once per sweep (same values as per vertex)
+    const ringCos = new Float64Array(M);
+    const ringSin = new Float64Array(M);
+    for (let j = 0; j < M; j++) {
+      const a = (j / M) * Math.PI * 2;
+      ringCos[j] = Math.cos(a);
+      ringSin[j] = Math.sin(a);
+    }
+    const P = this.pos, Nn = this.nor, C = this.col;
     const ring = (i: number, center: V3, r: number, tang: V3, axial: number, s: number) => {
       const f = frames[i]!;
-      const first = this.pos.length / 3;
+      const first = P.length / 3;
+      const n0 = f.n[0], n1 = f.n[1], n2 = f.n[2], b0 = f.b[0], b1 = f.b[1], b2 = f.b[2];
+      const t0 = tang[0] * axial, t1 = tang[1] * axial, t2 = tang[2] * axial;
       for (let j = 0; j < M; j++) {
-        const a = (j / M) * Math.PI * 2;
-        const ca = Math.cos(a);
-        const sa = Math.sin(a);
-        const rad: V3 = [f.n[0] * ca + f.b[0] * sa, f.n[1] * ca + f.b[1] * sa, f.n[2] * ca + f.b[2] * sa];
-        this.vert(add(center, mul(rad, r)), norm(add(rad, mul(tang, axial))), s);
+        const ca = ringCos[j]!;
+        const sa = ringSin[j]!;
+        // allocation-free form of vert(center + rad·r, norm(rad + tang·axial), s); identical arithmetic
+        const r0 = n0 * ca + b0 * sa, r1 = n1 * ca + b1 * sa, r2 = n2 * ca + b2 * sa;
+        P.push(center[0] + r0 * r, center[1] + r1 * r, center[2] + r2 * r);
+        const x = r0 + t0, y = r1 + t1, z = r2 + t2;
+        const l = Math.hypot(x, y, z) || 1;
+        Nn.push(x / l, y / l, z / l);
+        C.push(s);
       }
       return first;
     };
@@ -646,4 +661,13 @@ export function leanSideOf(h: { x: number; leanSide?: "left" | "right" | "auto" 
   if (h.leanSide === "left") return -1;
   if (h.leanSide === "right") return 1;
   return h.x < 0 ? 1 : -1;
+}
+
+/**
+ * Contract 1.4.1: what h.leanSide resolves to — an explicit side as given;
+ * "auto" / undefined leans towards the tank centre (x < 0 → "right",
+ * x ≥ 0 → "left"). Callers that must not flip (the editor) store the result.
+ */
+export function resolveLeanSide(h: { x: number; leanSide?: "left" | "right" | "auto" | undefined }): "left" | "right" {
+  return leanSideOf(h) < 0 ? "left" : "right";
 }

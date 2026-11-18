@@ -1,7 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FrontalTank, speciesLook } from "../src/index.js";
-import { footprintContains, hardscapeAnchors } from "../src/index.js";
+import { clampHardscapeXZ, footprintContains, hardscapeAnchors } from "../src/index.js";
 import type {
   BotanyRecordLike,
   CompositionGuide,
@@ -232,6 +232,23 @@ const EPIPHYTES: P[] = (() => {
   return out;
 })();
 
+// ---- 1.4.1 "glass" (?scene=glass): the woods scene with the branchy piece rotated and
+// dragged against the back-left glass; clampHardscapeXZ keeps its REAL extent 1 cm inside ----
+const GLASS_HS: HardscapeVisual[] = WOODS_HS.map((h) => {
+  if (h.id !== "w-branchy") return h;
+  const r: HardscapeVisual = { ...h, rotationY: 1.05 };
+  return { ...r, ...clampHardscapeXZ(r, WOOD_TANK, -1e3, -1e3) };
+});
+const GLASS: P[] = (() => {
+  const b = GLASS_HS[0]!;
+  const an = hardscapeAnchors(b, 8).filter((a) => a.y > 12);
+  // moss on two upper branches (attached plants follow the piece on the sloped bed)
+  return [
+    ...WOODS,
+    ...an.slice(0, 2).map((a, i) => ({ speciesId: i ? "vesicularia-dubyana" : "taxiphyllum-christmas", x: a.x, z: a.z, y: a.y, heightCm: 3, spreadCm: 8 })),
+  ];
+})();
+
 function App() {
   const params = new URLSearchParams(location.search);
   const quality = (params.get("q") as "high" | "low" | "auto" | null) ?? "auto";
@@ -255,12 +272,13 @@ function App() {
   const woods = scene === "woods";
   const nature = scene === "nature";
   const epi = scene === "epiphytes";
-  const bigTank = woods || nature || epi;
+  const glass = scene === "glass";
+  const bigTank = woods || nature || epi || glass;
   const guides = (params.get("guides") as CompositionGuide | null) ?? (iwagumi ? "thirds" : "none");
   const plants = useMemo<PlantVisual[]>(() => {
     const g = Math.min(1, t / 45);
     const ease = 1 - Math.pow(1 - g, 1.6);
-    const src = iwagumi ? IWAGUMI : woods ? WOODS : nature ? NATURE : epi ? EPIPHYTES : [...BASE, ...DENSE_EXTRA];
+    const src = iwagumi ? IWAGUMI : woods ? WOODS : glass ? GLASS : nature ? NATURE : epi ? EPIPHYTES : [...BASE, ...DENSE_EXTRA];
     return src.map((p, i) => ({
       id: `p${i}`,
       speciesId: p.speciesId,
@@ -275,7 +293,7 @@ function App() {
 
   // ---- editable mode (?edit=1, contract 1.2.0): controlled positions ----
   const edit = params.get("edit") === "1";
-  const stones = iwagumi ? IWAGUMI_STONES : woods ? WOODS_HS : nature ? NATURE_HS : epi ? EPI_HS : HARDSCAPE;
+  const stones = iwagumi ? IWAGUMI_STONES : woods ? WOODS_HS : glass ? GLASS_HS : nature ? NATURE_HS : epi ? EPI_HS : HARDSCAPE;
   const [hsState, setHsState] = useState<HardscapeVisual[]>(stones);
   const [posOverride, setPosOverride] = useState<Record<string, { x: number; z: number }>>({});
   const [selected, setSelected] = useState<EditTarget | null>(() => {

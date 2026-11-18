@@ -20,7 +20,7 @@ export type { PlantedTankProps, PlantEntry } from "./scene/PlantedTank.js";
 export { Aquarium } from "./Aquarium.js";
 export * from "./contract.js";
 
-// FrontalTank (contract 1.4.0) — stylized front-view tank
+// FrontalTank (contract 1.4.1) — stylized front-view tank
 export {
   FrontalTank,
   speciesLook,
@@ -29,4 +29,6 @@ export {
   clampHardscapeXZ,
   hardscapeSurfaceY,
   hardscapeAnchors,
+  hardscapeExtent,
+  resolveLeanSide,
 } from "./frontal/index.js";

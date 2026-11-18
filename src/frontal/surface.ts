@@ -10,14 +10,19 @@
  * actual triangles through a 2D uniform grid. No three.js scene is needed.
  *
  * Frame: x / z are tank coordinates; y is measured above the piece's
- * reference bed plane — the local bed at the piece as if it were flat
- * (stonePlacement().bedRef in the renderer). On a flat bed that is exactly
- * "above the local bed surface" (PlantVisual.y); on a sloped bed the renderer
- * draws attached plants at bedRef + y so they still sit on the mesh.
+ * reference bed plane — the bed height the piece is seated on, as if it were
+ * flat (stonePlacement().bedRef in the renderer). That is the bed height at
+ * the piece centre (h.x, h.z) (contract 1.4.1) whenever the centre is the
+ * lowest bed point under the piece's base: always on a flat bed, and for
+ * stones on most slopes. On a slope where part of the base is lower than the
+ * centre, the piece is sunk to that lowest point so it never floats, and its
+ * reference drops with it. The renderer draws an attached plant at
+ * bedRef + y — one height per PIECE, never the bed under the plant's own
+ * column — so it sits on the rendered mesh anywhere on the piece.
  */
 import * as THREE from "three";
 import type { HardscapeVisual, SurfaceAnchor } from "../contract.js";
-import { buildHardscapeGeometry, hardscapeShapeKey } from "./hardscapeCache.js";
+import { hardscapeShapeKey, shapeGeometry } from "./hardscapeCache.js";
 import type { RenderQuality } from "./layout.js";
 import { pieceFrame } from "./stones.js";
 
@@ -288,12 +293,15 @@ const _p = new THREE.Vector3();
 const _s = new THREE.Vector3(1, 1, 1);
 const _ry = new THREE.Matrix4();
 
-/** Frame matrix of a piece: T(x, relBottom, z) · R(leanX, 0, leanZ) · R_y(rotationY). */
-export function pieceMatrix(h: HardscapeVisual): THREE.Matrix4 {
+/**
+ * Frame matrix of a piece: T(x, relBottom, z) · R(leanX, 0, leanZ) · R_y(rotationY).
+ * `at` overrides the translation only (the lean still comes from h, incl. the sign of h.x).
+ */
+export function pieceMatrix(h: HardscapeVisual, at?: { x: number; z: number }): THREE.Matrix4 {
   const fr = pieceFrame(h);
   const m = new THREE.Matrix4();
   _e.set(fr.leanX, 0, fr.leanZ);
-  m.compose(_p.set(h.x, fr.relBottom, h.z), _q.setFromEuler(_e), _s);
+  m.compose(_p.set(at ? at.x : h.x, fr.relBottom, at ? at.z : h.z), _q.setFromEuler(_e), _s);
   _ry.makeRotationY(h.rotationY);
   return m.multiply(_ry);
 }
@@ -323,22 +331,110 @@ export function pieceSurface(h: HardscapeVisual, quality: RenderQuality = "high"
     memo.set(key, hit);
     return hit;
   }
-  const own = geo ? null : buildHardscapeGeometry(h, quality);
-  const s = new PieceSurface(geo ?? own!, pieceMatrix(h));
-  own?.dispose();
+  // 1.4.1: shapes come from the shared shape store (no rebuild of a piece the renderer built)
+  const s = new PieceSurface(geo ?? shapeGeometry(h, quality), pieceMatrix(h));
   memo.set(key, s);
   if (memo.size > MEMO_MAX) memo.delete(memo.keys().next().value!);
   return s;
 }
 
 /**
- * Contract 1.4.0: height of piece h's TOP surface at floor column (x, z),
- * above the piece's (flat) local bed, net of buriedFrac. null when the column
- * misses the piece. Values ≤ 0 mean the column only meets a buried part.
+ * Contract 1.4.0 / 1.4.1: height of piece h's TOP surface at floor column
+ * (x, z), above the piece's reference bed plane, net of buriedFrac. null when
+ * the column misses the piece or only meets buried geometry (at or below the
+ * bed): never a value ≤ 0 (1.4.1).
  */
 export function hardscapeSurfaceY(h: HardscapeVisual, x: number, z: number, opts?: SurfaceOpts): number | null {
   if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
-  return pieceSurface(h, qualityOf(opts)).top(x, z);
+  const y = pieceSurface(h, qualityOf(opts)).top(x, z);
+  return y !== null && y > 0 ? y : null;
+}
+
+// ---------------------------------------------------------------------------
+// Above-bed extent (1.4.1)
+
+export interface HardscapeExtent {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
+/** Placement-free extent key: shape + rotation + lean / burial frame (x matters only via its sign). */
+function extentKey(h: HardscapeVisual, quality: RenderQuality): string {
+  const fr = pieceFrame(h);
+  return `${hardscapeShapeKey(h, quality)}|${h.rotationY}|${fr.relBottom}|${fr.leanX}|${fr.leanZ}`;
+}
+
+const EXTENT_MEMO_MAX = 256;
+const extentMemo = new Map<string, HardscapeExtent>();
+
+/**
+ * Axis-aligned bounds of the placed, rotated (and leaning) geometry ABOVE the
+ * bed plane (frame y > 0), as offsets from (0, 0). Triangles crossing the bed
+ * plane are clipped there, so the result is exact for the visible mesh.
+ */
+function computeExtent(geo: THREE.BufferGeometry, m: THREE.Matrix4): HardscapeExtent {
+  const P = geo.getAttribute("position") as THREE.BufferAttribute;
+  const e = m.elements;
+  const nv = P.count;
+  const wx = new Float64Array(nv), wy = new Float64Array(nv), wz = new Float64Array(nv);
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  let aMinX = Infinity, aMaxX = -Infinity, aMinZ = Infinity, aMaxZ = -Infinity;
+  for (let i = 0; i < nv; i++) {
+    const x = P.getX(i), y = P.getY(i), z = P.getZ(i);
+    const X = e[0]! * x + e[4]! * y + e[8]! * z + e[12]!;
+    const Y = e[1]! * x + e[5]! * y + e[9]! * z + e[13]!;
+    const Z = e[2]! * x + e[6]! * y + e[10]! * z + e[14]!;
+    wx[i] = X; wy[i] = Y; wz[i] = Z;
+    if (X < aMinX) aMinX = X; if (X > aMaxX) aMaxX = X;
+    if (Z < aMinZ) aMinZ = Z; if (Z > aMaxZ) aMaxZ = Z;
+    if (Y > 0) {
+      if (X < minX) minX = X; if (X > maxX) maxX = X;
+      if (Z < minZ) minZ = Z; if (Z > maxZ) maxZ = Z;
+    }
+  }
+  // edges crossing the bed plane: their crossing points belong to the visible part
+  const ix = geo.getIndex();
+  if (ix) {
+    const I = ix.array as ArrayLike<number>;
+    for (let t = 0; t + 2 < I.length; t += 3) {
+      for (let k = 0; k < 3; k++) {
+        const a = I[t + k]!, b = I[t + ((k + 1) % 3)]!;
+        const ya = wy[a]!, yb = wy[b]!;
+        if ((ya > 0) === (yb > 0)) continue;
+        const f = ya / (ya - yb);
+        const X = wx[a]! + (wx[b]! - wx[a]!) * f;
+        const Z = wz[a]! + (wz[b]! - wz[a]!) * f;
+        if (X < minX) minX = X; if (X > maxX) maxX = X;
+        if (Z < minZ) minZ = Z; if (Z > maxZ) maxZ = Z;
+      }
+    }
+  }
+  // fully buried (degenerate): fall back to the whole mesh
+  if (minX === Infinity) return { minX: aMinX, maxX: aMaxX, minZ: aMinZ, maxZ: aMaxZ };
+  return { minX, maxX, minZ, maxZ };
+}
+
+/**
+ * Contract 1.4.1: offsets (cm) from (h.x, h.z) of the axis-aligned bounds of
+ * h's built, rotated geometry above the bed (buried parts ignored). Reads the
+ * shared shape store (no rebuild of a piece already built) and is memoised by
+ * shape + rotation + lean, so dragging a piece never rebuilds anything.
+ */
+export function hardscapeExtent(h: HardscapeVisual, opts?: SurfaceOpts): HardscapeExtent {
+  const quality = qualityOf(opts);
+  const key = extentKey(h, quality);
+  const hit = extentMemo.get(key);
+  if (hit) {
+    extentMemo.delete(key);
+    extentMemo.set(key, hit);
+    return { ...hit };
+  }
+  const ext = computeExtent(shapeGeometry(h, quality), pieceMatrix(h, { x: 0, z: 0 }));
+  extentMemo.set(key, ext);
+  if (extentMemo.size > EXTENT_MEMO_MAX) extentMemo.delete(extentMemo.keys().next().value!);
+  return { ...ext };
 }
 
 const smooth = (e0: number, e1: number, v: number) => {
@@ -436,6 +532,39 @@ export interface PlacedSurface {
   surf: PieceSurface;
   /** world y of the piece's reference bed plane (stonePlacement().bedRef) */
   bedRef: number;
+}
+
+/**
+ * World bed reference for a plant attached at (x, z) with frame height y
+ * (1.4.1): the bedRef of the piece whose top surface at (x, z) is closest to
+ * y; else of the nearest piece whose above-bed extent (grown by 1 cm) holds
+ * (x, z); else null (not on any piece: the caller uses the bed under it).
+ * Always a per-piece height, so the plant follows its piece on a sloped bed.
+ */
+export function attachedBedRef(
+  pieces: readonly (PlacedSurface & { h: HardscapeVisual })[],
+  x: number,
+  z: number,
+  y: number,
+  quality: RenderQuality = "high",
+): number | null {
+  let best: number | null = null;
+  let bestD = Infinity;
+  for (const pc of pieces) {
+    const t = pc.surf.top(x, z);
+    if (t === null) continue;
+    const d = Math.abs(t - y);
+    if (d < bestD) { bestD = d; best = pc.bedRef; }
+  }
+  if (best !== null) return best;
+  for (const pc of pieces) {
+    const e = hardscapeExtent(pc.h, { quality });
+    const dx = Math.max(pc.h.x + e.minX - x, 0, x - pc.h.x - e.maxX);
+    const dz = Math.max(pc.h.z + e.minZ - z, 0, z - pc.h.z - e.maxZ);
+    const d = Math.hypot(dx, dz);
+    if (d <= 1 && d < bestD) { bestD = d; best = pc.bedRef; }
+  }
+  return best;
 }
 
 export function makeSurfaceField(pieces: readonly PlacedSurface[]): SurfaceField {

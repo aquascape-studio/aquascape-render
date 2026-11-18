@@ -16,7 +16,36 @@
  * smooth sculptural stones.
  */
 
-export const RENDER_CONTRACT_VERSION = "1.4.0" as const;
+export const RENDER_CONTRACT_VERSION = "1.4.1" as const;
+
+/*
+ * 1.4.1 (2026-11-18, 11-17 r2 objections; behaviour fixes + 2 pure exports):
+ *  - Glass clamp uses the REAL extent. New pure export
+ *    hardscapeExtent(h, opts?) → { minX, maxX, minZ, maxZ }: offsets (cm) from
+ *    (h.x, h.z) of the axis-aligned bounds of the built, rotated geometry that
+ *    lies ABOVE the bed (buried parts ignored), from the per-piece cache.
+ *    clampHardscapeXZ now keeps that extent ≥ 1 cm inside the glass on x and
+ *    z (was: the footprint ellipse), so rotated branchy / root wood never pokes
+ *    through the back or side glass. If the extent is wider than the interior
+ *    on an axis, the extent is centred on that axis. Test: every wood style ×
+ *    rotations k·15° × the 4 template tanks, after clamping every vertex of
+ *    the above-bed mesh is ≥ 1 cm − 0.05 inside.
+ *  - New pure export resolveLeanSide(h) → "left" | "right": what "auto" (or
+ *    an explicit side) resolves to for h. "auto" is still x-dependent;
+ *    callers that must not flip (the editor) store the resolved side.
+ *  - hardscapeSurfaceY reference, normative (amended at integration after
+ *    render-agent's objection): y is measured from the piece's SEAT height —
+ *    the single bed height FrontalTank seats the whole piece at (on a slope,
+ *    the lowest bed point under its base, so it never floats; equals
+ *    bedY(h.x, h.z) on a flat bed). FrontalTank draws an attached plant at
+ *    seatY(h) + y — one height per piece, never bedY(x, z) + y. Test: on a
+ *    sloped bed (front 2 cm, back 8 cm) an attached plant's base is within
+ *    0.5 cm of the rendered surface, for plants ≥ 10 cm from the piece centre.
+ *  - A column that only hits buried geometry (at or below the bed) returns
+ *    null, never y ≤ 0. hardscapeAnchors never returns y ≤ 0.2 cm.
+ *  - No visual change intended; front-view screenshots must match 1.4.0
+ *    except for pieces that previously crossed the glass.
+ */
 
 /*
  * 1.4.0 (2026-11-17, additive — epiphytes tied onto hardscape, 11-16 objections):
@@ -334,5 +363,9 @@ export interface BotanyRecordLike {
  *     — (1.4.0) see notes above. Pure.
  *   export function hardscapeAnchors(h: HardscapeVisual, n: number, opts?: { quality?: "high" | "low" | undefined }): SurfaceAnchor[]
  *     — (1.4.0) see notes above. Pure.
+ *   export function hardscapeExtent(h: HardscapeVisual, opts?: { quality?: "high" | "low" | undefined }): { minX: number; maxX: number; minZ: number; maxZ: number }
+ *     — (1.4.1) see notes above. Pure.
+ *   export function resolveLeanSide(h: HardscapeVisual): "left" | "right"
+ *     — (1.4.1) see notes above. Pure.
  *   Types LeanSide and SurfaceAnchor are exported from the package index.
  */

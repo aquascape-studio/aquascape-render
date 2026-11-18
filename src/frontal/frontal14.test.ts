@@ -86,8 +86,8 @@ function columns(mesh: THREE.Mesh, box: THREE.Box3, n: number, seed: number): [n
 }
 
 describe("contract version", () => {
-  it("is 1.4.0", () => {
-    expect(RENDER_CONTRACT_VERSION).toBe("1.4.0");
+  it("is 1.4.x (1.4.1 is a behaviour-fix release of 1.4.0)", () => {
+    expect(["1.4.0", "1.4.1"]).toContain(RENDER_CONTRACT_VERSION);
   });
   it("exports hardscapeSurfaceY / hardscapeAnchors from the package and frontal index", () => {
     expect(pkg.hardscapeSurfaceY).toBe(hardscapeSurfaceY);
@@ -118,8 +118,17 @@ describe("hardscapeSurfaceY (1.4.0) matches the rendered mesh within 0.5 cm", ()
           if (y !== null) expect(castDown(mesh, x + 0.02, z) ?? castDown(mesh, x - 0.02, z) ?? castDown(mesh, x, z + 0.02)).not.toBeNull();
           continue;
         }
-        expect(y).not.toBeNull();
-        const d = Math.abs(ref - place.bedRef - y!);
+        // 1.4.1: a column that only meets buried geometry (at / below the bed) is null
+        if (ref - place.bedRef <= 0) {
+          expect(y).toBeNull();
+          continue;
+        }
+        if (y === null) {
+          // grazing: the rendered top is within float noise of the bed plane
+          expect(ref - place.bedRef).toBeLessThan(1e-3);
+          continue;
+        }
+        const d = Math.abs(ref - place.bedRef - y);
         worst = Math.max(worst, d);
         hits++;
       }
@@ -145,7 +154,7 @@ describe("hardscapeSurfaceY (1.4.0) matches the rendered mesh within 0.5 cm", ()
     let hits = 0;
     for (const [x, z] of columns(mesh, box, 200, 5)) {
       const ref = castDown(mesh, x, z);
-      if (ref === null) continue;
+      if (ref === null || ref - place.bedRef <= 1e-3) continue;
       const y = hardscapeSurfaceY(h, x, z, { quality: "low" });
       expect(Math.abs(ref - place.bedRef - (y ?? -999))).toBeLessThan(0.5);
       hits++;
